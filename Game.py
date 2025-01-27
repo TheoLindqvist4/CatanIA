@@ -15,6 +15,7 @@ class Player:
         'Road builder': 0,
         'Victory Point': 0 
     }
+    player_numbers = {}
     player_points = 0
     player_settlement = 5
     player_cities = 4
@@ -118,7 +119,24 @@ class Board:
 
         return adjacent_numbers
 
+    def get_adjacents_for_positions(self):
 
+        adjacent_to_each_position ={
+            1: [4,5],
+            2: [5,6],
+            3: [6,7],
+            4: [1,8],
+            5: [1,2,9],
+            6: [2,3,10],
+            7: [3,11],
+            8: [4,12,13],
+            9: [5,13,14],
+            10: [6,14,15],
+            11: [7,15,16],
+            12: [8,17],
+            13: 
+        }
+        return adjacents
 
     def generate_board(self):
         while True:  # Retry until a valid board is generated
@@ -206,6 +224,7 @@ class Board:
             19: [42, 46, 47, 50, 51, 54]
         }
 
+
         # Dictionnaire final des intersections avec les ressources
         intersection_resources = {}
 
@@ -238,6 +257,8 @@ class Board:
         # Trier les ID par ordre croissant
         sorted_intersections = dict(sorted(intersection_resources.items()))
         self.positions_grid = sorted_intersections
+
+        print(sorted_intersections)
         return 
 
 
@@ -272,14 +293,14 @@ class Dice:
     def print_value(self):
         return print(self.dice_value)
     
-dice_1 = Dice()
-dice_2 = Dice()
-dice_1.roll_dice()
-dice_2.roll_dice()
-dice_1.print_value()
-dice_2.print_value()
-total_dice = dice_1.dice_value + dice_2.dice_value
-print(total_dice)
+# dice_1 = Dice()
+# dice_2 = Dice()
+# dice_1.roll_dice()
+# dice_2.roll_dice()
+# dice_1.print_value()
+# dice_2.print_value()
+# total_dice = dice_1.dice_value + dice_2.dice_value
+# print(total_dice)
 
 
 
@@ -293,7 +314,13 @@ class Game_2_players:
             1: Player(),
             2: Player(),
         }
+        self.board = Board()
         self.randomize_order()
+        self.print_order() 
+        self.placing_first_settlement()  
+        self.placing_second_settlement()
+        
+
         
     def randomize_order(self):
         random.shuffle(self.player_order)
@@ -302,37 +329,44 @@ class Game_2_players:
         for player_num in self.player_order:
             player = self.players[player_num]
             
-            # Player places a settlement
-            if player.player_settlement > 0:
-                player.player_settlement -= 1
-                print(f"Player {player_num} placed a settlement. Remaining settlements: {player.player_settlement}")
+            print(f"Player {player_num} please choose a position on the board:")
+            position = self.get_user_number()
+            player.player_settlement -= 1
+            print(f"Player {player_num} placed a settlement in the position {position}. Remaining settlements: {player.player_settlement}")
             
-            # Player places a road
-            if player.player_roads > 0:
-                player.player_roads -= 1
-                print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
+            player.player_roads -= 1
+            print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
+            print("")
 
     def placing_second_settlement(self):
         for player_num in reversed(self.player_order):  # Reverse the player order
             player = self.players[player_num]
             
-            # Player places a settlement
-            if player.player_settlement > 0:
-                player.player_settlement -= 1
-                print(f"Player {player_num} placed a settlement. Remaining settlements: {player.player_settlement}")
+            print(f"Player {player_num} please choose a position on the board:")
+            position = self.get_user_number()
+            player.player_settlement -= 1
+            print(f"Player {player_num} placed a settlement in the position {position}. Remaining settlements: {player.player_settlement}")
             
-            # Player places a road
-            if player.player_roads > 0:
-                player.player_roads -= 1
-                print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
+            player.player_roads -= 1
+            print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
+            print("")
+
 
     def print_order(self):
         print("Player turn order:", self.player_order)
+        return
+    
+    @staticmethod
+    def get_user_number():
+        while True:
+            try:
+                number = int(input("Enter a number: "))
+                return number
+            except ValueError:
+                print("Invalid input. Please enter a valid number.")
+
 
 
 
 # Example usage:
 game = Game_2_players()
-game.print_order()  # Shows the randomized player order
-game.placing_first_settlement()  # Players take turns placing settlements and roads
-game.placing_second_settlement()
