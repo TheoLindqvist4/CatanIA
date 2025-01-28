@@ -39,20 +39,33 @@ class Game_2_players:
         else:
             return "You do not have any more settlements."
 
+    def place_road(self, player_number):
+        position = self.get_user_number()
+        player = self.players[player_number]
+        if player.player_roads > 0:
+            if position in self.board.road_positions:
+                player.player_roads -= 1
+                self.board.delete_road_position(position)
+                player.player_road_position.add(position)
+                return f"Road placed at position {position}."
+            else:
+                return "You cannot put a road in this position."
+        else:
+            return "You do not have any more roads."
 
     def placing_first_settlement(self):
         for player_num in self.player_order:
             while self.players[player_num].player_settlement > 0:
-                print(f"Player {player_num}, please choose a position on the board:")
+                print(f"Player {player_num}, please choose a settlement position on the board:")
                 settlement_message = self.place_settlement(player_num)
                 print(settlement_message)
 
                 if "Settlement placed" in settlement_message:
-                    self.players[player_num].player_roads -= 1
-                    print(f"Player {player_num} placed a road. Remaining roads: {self.players[player_num].player_roads}")
-                    break  # Exit the loop once the settlement is placed
-                else:
-                    print("Please place a settlement before proceeding.")
+                    print(f"Player {player_num}, please choose a road position on the board:")
+                    road_message = self.place_road(player_num)
+                    print(road_message)
+                    print("")
+                    break
 
             print("")
 
@@ -61,16 +74,16 @@ class Game_2_players:
     def placing_second_settlement(self):
         for player_num in reversed(self.player_order):  # Reverse the player order
             while self.players[player_num].player_settlement > 0:
-                print(f"Player {player_num} please choose a position on the board:")
+                print(f"Player {player_num} please choose a settlement position on the board:")
                 settlement_message = self.place_settlement(player_num)
                 print(settlement_message)
 
                 if "Settlement placed" in settlement_message:
-                    self.players[player_num].player_roads -= 1
-                    print(f"Player {player_num} placed a road. Remaining roads: {self.players[player_num].player_roads}")
-                    break  # Exit the loop once the settlement is placed
-                else:
-                    print("Please place a settlement before proceeding.")
+                    print(f"Player {player_num}, please choose a road position on the board:")
+                    road_message = self.place_road(player_num)
+                    print(road_message)
+                    print("")
+                    break
 
             print("")
 

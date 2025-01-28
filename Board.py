@@ -296,8 +296,6 @@ class Board:
         Args:
             number (int): The position number to be deleted.
         """
-        print(self.settlement_positions)
-        print("")
         # Remove the specified number if it exists in settlement_positions
         if number in self.settlement_positions:
             self.settlement_positions.remove(number)
@@ -307,5 +305,14 @@ class Board:
         for adjacent in adjacent_positions:
             if adjacent in self.settlement_positions:
                 self.settlement_positions.remove(adjacent)
-                print(self.settlement_positions)
-                print("")
+
+    def delete_road_position(self, number):
+        """
+        Deletes a position  from road_positions.
+
+        Args:
+            number (int): The position number to be deleted.
+        """
+        # Remove the specified number if it exists in settlement_positions
+        if number in self.road_positions:
+            self.road_positions.remove(number)

@@ -19,6 +19,7 @@ class Player:
         self.player_settlement = 5
         self.player_cities = 4
         self.player_roads = 15
+        self.player_road_position = set()
 
         self.player_longest_road = False
         self.player_army = False
