@@ -7,11 +7,17 @@ class Board:
         self.grid = []  # Stores numbers on each tile
         self.tile_grid = []  # Stores tile types on each tile
         self.positions_grid =[] #Stores numbers, tiles based on city position
-        self.available_positions = [
+        self.settlement_positions = [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 
             21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 
             39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54
             ]
+        self.road_positions = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 
+            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 
+            57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72
+        ]
 
         self.tiles = {
             'Ore': 3,  
@@ -282,3 +288,24 @@ class Board:
 
         print(sorted_intersections)
         return 
+    
+    def delete_settlement_position(self, number):
+        """
+        Deletes a position and its adjacent positions from settlement_positions.
+
+        Args:
+            number (int): The position number to be deleted.
+        """
+        print(self.settlement_positions)
+        print("")
+        # Remove the specified number if it exists in settlement_positions
+        if number in self.settlement_positions:
+            self.settlement_positions.remove(number)
+
+        # Get adjacent positions and remove them from settlement_positions
+        adjacent_positions = self.get_adjacents_for_positions(number)
+        for adjacent in adjacent_positions:
+            if adjacent in self.settlement_positions:
+                self.settlement_positions.remove(adjacent)
+                print(self.settlement_positions)
+                print("")
