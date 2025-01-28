@@ -1,36 +1,5 @@
 import random
 
-class Player:
-    player_ressources = {
-        'Ore': 0,  
-        'Weat': 0, 
-        'Sheep': 0,  
-        'Brick': 0,
-        'Wood': 0 
-    }
-    player_dev_cards = {
-        'Knight': 0,  
-        'Year of plenty': 0, 
-        'Monopoly': 0,  
-        'Road builder': 0,
-        'Victory Point': 0 
-    }
-    player_numbers = {}
-    player_points = 0
-    player_settlement = 5
-    player_cities = 4
-    player_roads = 15
-
-    player_longest_road = False
-    player_army = False
-
-    player_ore_port = False
-    player_weat_port = False
-    player_sheep_port = False
-    player_brick_port = False
-    player_wood_port = False
-    player_3_to_1_port = False
-
 class Board:
     def __init__(self):
         self.numbers = [2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12]
@@ -38,6 +7,12 @@ class Board:
         self.grid = []  # Stores numbers on each tile
         self.tile_grid = []  # Stores tile types on each tile
         self.positions_grid =[] #Stores numbers, tiles based on city position
+        self.available_positions = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 
+            21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 
+            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54
+            ]
+
         self.tiles = {
             'Ore': 3,  
             'Weat': 4, 
@@ -119,24 +94,71 @@ class Board:
 
         return adjacent_numbers
 
-    def get_adjacents_for_positions(self):
-
-        adjacent_to_each_position ={
-            1: [4,5],
-            2: [5,6],
-            3: [6,7],
-            4: [1,8],
-            5: [1,2,9],
-            6: [2,3,10],
-            7: [3,11],
-            8: [4,12,13],
-            9: [5,13,14],
-            10: [6,14,15],
-            11: [7,15,16],
-            12: [8,17],
-            13: 
+    def get_adjacents_for_positions(self, position):
+        adjacent_to_each_position = {
+            1: [4, 5],
+            2: [5, 6],
+            3: [6, 7],
+            4: [1, 8],
+            5: [1, 2, 9],
+            6: [2, 3, 10],
+            7: [3, 11],
+            8: [4, 12, 13],
+            9: [5, 13, 14],
+            10: [6, 14, 15],
+            11: [7, 15, 16],
+            12: [8, 17],
+            13: [8, 9, 18],
+            14: [9, 10, 19],
+            15: [10, 11, 20],
+            16: [11, 21],
+            17: [12, 22, 23],
+            18: [13, 23, 24],
+            19: [14, 24, 25],
+            20: [15, 25, 26],
+            21: [16, 26, 27],
+            22: [17, 28],
+            23: [17, 18, 29],
+            24: [18, 19, 30],
+            25: [19, 20, 31],
+            26: [20, 21, 32],
+            27: [21, 33],
+            28: [22, 34],
+            29: [23, 34, 35],
+            30: [24, 35, 36],
+            31: [25, 36, 37],
+            32: [26, 37, 38],
+            33: [27, 38],
+            34: [28, 29, 39],
+            35: [29, 30, 40],
+            36: [30, 31, 41],
+            37: [31, 32, 42],
+            38: [32, 33, 43],
+            39: [34, 44],
+            40: [35, 44, 45],
+            41: [36, 45, 46],
+            42: [37, 46, 47],
+            43: [38, 47],
+            44: [39, 40, 48],
+            45: [40, 41, 49],
+            46: [41, 42, 50],
+            47: [42, 43, 51],
+            48: [44, 52],
+            49: [45, 52, 53],
+            50: [46, 53, 54],
+            51: [47, 54],
+            52: [48, 49],
+            53: [49, 50],
+            54: [50, 51]
         }
-        return adjacents
+
+        # Check if the position is valid
+        if not isinstance(position, int) or not (1 <= position <= 54):
+            return "The number must be between 1 and 54."
+
+        # Return the adjacent positions
+        return adjacent_to_each_position.get(position)
+
 
     def generate_board(self):
         while True:  # Retry until a valid board is generated
@@ -260,113 +282,3 @@ class Board:
 
         print(sorted_intersections)
         return 
-
-
-
-
-
- 
-
-class Deck:
-    resource_ore = 21
-    resource_weat = 21
-    resource_sheep = 21
-    resource_brick = 21
-    resource_wood = 21
-
-    dev_knight = 14
-    dev_victory_points = 5
-    dev_road_builder = 2
-    dev_year_of_plenty = 2
-    dev_monopoly = 2
-
-
-
-    
-class Dice:
-    dice_value = 6
-
-    def roll_dice(self):
-        self.dice_value = random.randint(1,6)
-        return self.dice_value
-
-    def print_value(self):
-        return print(self.dice_value)
-    
-# dice_1 = Dice()
-# dice_2 = Dice()
-# dice_1.roll_dice()
-# dice_2.roll_dice()
-# dice_1.print_value()
-# dice_2.print_value()
-# total_dice = dice_1.dice_value + dice_2.dice_value
-# print(total_dice)
-
-
-
-
-class Game_2_players:
-    player_order = [1, 2]
-    
-    def __init__(self):
-        # Create player instances
-        self.players = {
-            1: Player(),
-            2: Player(),
-        }
-        self.board = Board()
-        self.randomize_order()
-        self.print_order() 
-        self.placing_first_settlement()  
-        self.placing_second_settlement()
-        
-
-        
-    def randomize_order(self):
-        random.shuffle(self.player_order)
-
-    def placing_first_settlement(self):
-        for player_num in self.player_order:
-            player = self.players[player_num]
-            
-            print(f"Player {player_num} please choose a position on the board:")
-            position = self.get_user_number()
-            player.player_settlement -= 1
-            print(f"Player {player_num} placed a settlement in the position {position}. Remaining settlements: {player.player_settlement}")
-            
-            player.player_roads -= 1
-            print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
-            print("")
-
-    def placing_second_settlement(self):
-        for player_num in reversed(self.player_order):  # Reverse the player order
-            player = self.players[player_num]
-            
-            print(f"Player {player_num} please choose a position on the board:")
-            position = self.get_user_number()
-            player.player_settlement -= 1
-            print(f"Player {player_num} placed a settlement in the position {position}. Remaining settlements: {player.player_settlement}")
-            
-            player.player_roads -= 1
-            print(f"Player {player_num} placed a road. Remaining roads: {player.player_roads}")
-            print("")
-
-
-    def print_order(self):
-        print("Player turn order:", self.player_order)
-        return
-    
-    @staticmethod
-    def get_user_number():
-        while True:
-            try:
-                number = int(input("Enter a number: "))
-                return number
-            except ValueError:
-                print("Invalid input. Please enter a valid number.")
-
-
-
-
-# Example usage:
-game = Game_2_players()
