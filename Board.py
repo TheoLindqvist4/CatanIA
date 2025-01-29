@@ -32,38 +32,134 @@ class Board:
         self.display_board()
         self.assign_intersection_resources()
 
-    def is_adjacent_valid(self, row, col, num):
-        # Retrieve the numbers of adjacent tiles
-        adjacent_numbers = self.get_adjacent(row, col)
-
-        # Check if the same number exists in adjacent tiles
-        if num in adjacent_numbers:
-            return False
-
-        # Specific number adjacency restrictions
-        if (num == 2 and 12 in adjacent_numbers) or (num == 12 and 2 in adjacent_numbers):
-            return False
-        if (num == 8 and 6 in adjacent_numbers) or (num == 6 and 8 in adjacent_numbers):
-            return False
-
-        return True
-
+    # CREATION OF THE BOARD
 
     def get_flat_index(self, row, col):
-        # Convert a row-column pair to a flat tile index
-        row_start_indices = [0, 3, 7, 12, 16]  # Starting indices of tiles in each row
+        row_start_indices = [0, 3, 7, 12, 16] 
         return row_start_indices[row] + col + 1
 
     def get_coordinates_from_index(self, index):
-        # Convert a flat tile index to a row-column pair
-        row_start_indices = [0, 3, 7, 12, 16]  # Starting indices of tiles in each row
+        row_start_indices = [0, 3, 7, 12, 16]  
         for row, start_index in enumerate(row_start_indices):
             if start_index <= index - 1 < start_index + len(self.grid[row]):
                 return row, (index - 1) - start_index
-        return None, None  # Return invalid coordinates if the index is out of bounds
+        return None, None 
 
+
+    def generate_board(self):
+        while True: 
+            self.grid = [[] for _ in range(5)]
+            numbers = self.numbers[:] 
+            random.shuffle(numbers)  
+
+            generation_failed = False
+
+            for row, row_length in enumerate(self.rows):
+                for col in range(row_length):
+                    valid_number_found = False  
+                    for num in numbers:
+                        if self.is_adjacent_valid(row, col, num):
+                            self.grid[row].append(num)
+                            numbers.remove(num)
+                            valid_number_found = True
+                            break
+                    
+                    if not valid_number_found:
+                        generation_failed = True
+                        break  
+                
+                if generation_failed:
+                    break  
+
+            all_placed = all(len(self.grid[row]) == row_length for row, row_length in enumerate(self.rows))
+            if all_placed and not numbers:  
+                break  
+
+
+
+    def assign_tiles(self):
+        self.tile_grid = [[] for _ in range(5)]
+        
+        tile_counts = self.tiles.copy()
+        for row in range(5):
+            for col in range(len(self.grid[row])):
+                if self.grid[row][col] == 7:
+                    self.tile_grid[row].append('Desert')
+                    tile_counts['Desert'] -= 1
+                else:
+                    self.tile_grid[row].append(None) 
+
+        tile_positions = [(r, c) for r in range(5) for c in range(len(self.grid[r])) if self.tile_grid[r][c] is None]
+        tile_types = [tile for tile, count in tile_counts.items() for _ in range(count)]
+        random.shuffle(tile_types)
+
+        for (row, col), tile_type in zip(tile_positions, tile_types):
+            self.tile_grid[row][col] = tile_type
+
+    def assign_intersection_resources(self):
+        tile_to_ids = {
+            1: [1, 4, 5, 8, 9, 13],
+            2: [2, 5, 6, 9, 10, 14],
+            3: [3, 6, 7, 10, 11, 15],
+            4: [8, 12, 13, 17, 18, 23],
+            5: [9, 13, 14, 18, 19, 24],
+            6: [10, 14, 15, 19, 20, 25],
+            7: [11, 15, 16, 20, 21, 26],
+            8: [17, 22, 23, 28, 29, 34],
+            9: [18, 23, 24, 29, 30, 35],
+            10: [19, 24, 25, 30, 31, 36],
+            11: [20, 25, 26, 31, 32, 37],
+            12: [21, 26, 27, 32, 33, 38],
+            13: [29, 34, 35, 39, 40, 44],
+            14: [30, 35, 36, 40, 41, 45],
+            15: [31, 36, 37, 41, 42, 46],
+            16: [32, 37, 38, 42, 43, 47],
+            17: [40, 44, 45, 48, 49, 52],
+            18: [41, 45, 46, 49, 50, 53],
+            19: [42, 46, 47, 50, 51, 54]
+        }
+
+        intersection_resources = {}
+
+        def get_row_col(tile):
+            counter = 0
+            for row, row_length in enumerate(self.rows):
+                if counter <= tile - 1 < counter + row_length:
+                    col = tile - 1 - counter
+                    return row, col
+                counter += row_length
+            raise ValueError(f"Tile {tile} not found in grid structure.")
+
+        for tile, ids in tile_to_ids.items():
+            for id_ in ids:
+                try:
+                    row, col = get_row_col(tile)
+                    resource = self.tile_grid[row][col]
+                    number = self.grid[row][col]
+
+                    if id_ not in intersection_resources:
+                        intersection_resources[id_] = []
+                    intersection_resources[id_].append({number: resource})
+                except (IndexError, ValueError) as e:
+                    print(f"Error processing tile {tile} for ID {id_}: {e}")
+
+        sorted_intersections = dict(sorted(intersection_resources.items()))
+        self.positions_grid = sorted_intersections
+
+        print(sorted_intersections)
+        return 
+    
+    # DISPLAY OF THE BOARD
+    
+    def display_board(self):
+        for num_row, tile_row in zip(self.grid, self.tile_grid):
+            row_display = " ".join(f"{num}({tile})" for num, tile in zip(num_row, tile_row))
+            print(row_display)
+    
+    # MAP FOR ADJACENT ROAD AND SETTLEMENT POSITION
+    
+    
     def get_adjacent(self, row, col):
-        # Define the adjacency map for the tiles
         adjacency_map = {
             1: [2, 4, 5],
             2: [1, 3, 5, 6],
@@ -86,20 +182,17 @@ class Board:
             19: [15, 16, 18],
         }
 
-        # Get the flat index of the current tile
         current_tile = self.get_flat_index(row, col)
 
-        # Collect numbers of adjacent tiles
         adjacent_numbers = []
         for adj_tile in adjacency_map.get(current_tile, []):
             adj_row, adj_col = self.get_coordinates_from_index(adj_tile)
-            # Only process valid coordinates
             if adj_row is not None and adj_col is not None:
                 if 0 <= adj_row < len(self.grid) and 0 <= adj_col < len(self.grid[adj_row]):
                     adjacent_numbers.append(self.grid[adj_row][adj_col])
 
         return adjacent_numbers
-
+    
     def get_adjacents_for_positions(self, position):
         adjacent_to_each_position = {
             1: [4, 5],
@@ -158,137 +251,113 @@ class Board:
             54: [50, 51]
         }
 
-        # Check if the position is valid
         if not isinstance(position, int) or not (1 <= position <= 54):
             return "The number must be between 1 and 54."
 
-        # Return the adjacent positions
         return adjacent_to_each_position.get(position)
 
-
-    def generate_board(self):
-        while True:  # Retry until a valid board is generated
-            # Initialize the grid with empty slots
-            self.grid = [[] for _ in range(5)]
-            numbers = self.numbers[:]  # Copy the list of numbers
-            random.shuffle(numbers)  # Shuffle numbers for random placement
-
-            # Flag to detect if the generation fails
-            generation_failed = False
-
-            for row, row_length in enumerate(self.rows):
-                for col in range(row_length):
-                    valid_number_found = False  # Track if a valid number is placed
-                    for num in numbers:
-                        if self.is_adjacent_valid(row, col, num):
-                            self.grid[row].append(num)
-                            numbers.remove(num)
-                            valid_number_found = True
-                            break
-                    
-                    if not valid_number_found:
-                        generation_failed = True
-                        break  # Break inner loop if placement fails
-                
-                if generation_failed:
-                    break  # Break outer loop if generation fails
-
-            # Validate if board generation is successful
-            all_placed = all(len(self.grid[row]) == row_length for row, row_length in enumerate(self.rows))
-            if all_placed and not numbers:  # Ensure all numbers are placed
-                break  # Exit the loop if successful
-
-
-
-    def assign_tiles(self):
-        # Initialize an empty grid for tiles following the 3-4-5-4-3 structure
-        self.tile_grid = [[] for _ in range(5)]
-        
-        # Find the location of the number 7 and assign the Desert tile there
-        tile_counts = self.tiles.copy()
-        for row in range(5):
-            for col in range(len(self.grid[row])):
-                if self.grid[row][col] == 7:
-                    self.tile_grid[row].append('Desert')
-                    tile_counts['Desert'] -= 1
-                else:
-                    self.tile_grid[row].append(None)  # Placeholder for other tiles
-
-        # Flatten available tile positions for easier assignment
-        tile_positions = [(r, c) for r in range(5) for c in range(len(self.grid[r])) if self.tile_grid[r][c] is None]
-        tile_types = [tile for tile, count in tile_counts.items() for _ in range(count)]
-        random.shuffle(tile_types)
-
-        # Assign remaining tiles randomly
-        for (row, col), tile_type in zip(tile_positions, tile_types):
-            self.tile_grid[row][col] = tile_type
-
-    def display_board(self):
-        for num_row, tile_row in zip(self.grid, self.tile_grid):
-            row_display = " ".join(f"{num}({tile})" for num, tile in zip(num_row, tile_row))
-            print(row_display)   
-
-    def assign_intersection_resources(self):
-        # Associer chaque tuile aux IDs correspondants
-        tile_to_ids = {
-            1: [1, 4, 5, 8, 9, 13],
-            2: [2, 5, 6, 9, 10, 14],
-            3: [3, 6, 7, 10, 11, 15],
-            4: [8, 12, 13, 17, 18, 23],
-            5: [9, 13, 14, 18, 19, 24],
-            6: [10, 14, 15, 19, 20, 25],
-            7: [11, 15, 16, 20, 21, 26],
-            8: [17, 22, 23, 28, 29, 34],
-            9: [18, 23, 24, 29, 30, 35],
-            10: [19, 24, 25, 30, 31, 36],
-            11: [20, 25, 26, 31, 32, 37],
-            12: [21, 26, 27, 32, 33, 38],
-            13: [29, 34, 35, 39, 40, 44],
-            14: [30, 35, 36, 40, 41, 45],
-            15: [31, 36, 37, 41, 42, 46],
-            16: [32, 37, 38, 42, 43, 47],
-            17: [40, 44, 45, 48, 49, 52],
-            18: [41, 45, 46, 49, 50, 53],
-            19: [42, 46, 47, 50, 51, 54]
+    def get_adjacent_roads_from_settlement(self,position):
+        adjacent_to_each_position = {
+            1: [1,2],
+            2: [3,4],
+            3: [5,6],
+            4: [1,7],
+            5: [2,3,8],
+            6: [4,5,9],
+            7: [6,10],
+            8: [7,11,12],
+            9: [8,13,14],
+            10: [9,15,16],
+            11: [10,17,18],
+            12: [11,19],
+            13: [12,13,20],
+            14: [14,15,21],
+            15: [16,17,22],
+            16: [18,23],
+            17: [19,24,25],
+            18: [20,26,27],
+            19: [21,28,29],
+            20: [22,30,31],
+            21: [23,32,33],
+            22: [24,34],
+            23: [25,26,35],
+            24: [27,28,36],
+            25: [29,30,37],
+            26: [31,32,38],
+            27: [33,39],
+            28: [34,40],
+            29: [35,41,42],
+            30: [36,43,44],
+            31: [37,45,46],
+            32: [38,47,48],
+            33: [39,49],
+            34: [40,41,50],
+            35: [42,43,51],
+            36: [44,45,52],
+            37: [46,47,53],
+            38: [48,49,54],
+            39: [50,55],
+            40: [51,56,57],
+            41: [52,58,59],
+            42: [53,60,61],
+            43: [54,62],
+            44: [55,56,63],
+            45: [57,58,64],
+            46: [59,60,65],
+            47: [61,62,66],
+            48: [63,67],
+            49: [64,68,69],
+            50: [65,70,71],
+            51: [66,72],
+            52: [67,68],
+            53: [69,70],
+            54: [71,72]
         }
+        if not isinstance(position, int) or not (1 <= position <= 54):
+            return "The number must be between 1 and 54."
 
-
-        # Dictionnaire final des intersections avec les ressources
-        intersection_resources = {}
-
-        # Fonction pour obtenir l'indice (row, col) basé sur le numéro de tuile
-        def get_row_col(tile):
-            counter = 0
-            for row, row_length in enumerate(self.rows):
-                if counter <= tile - 1 < counter + row_length:
-                    col = tile - 1 - counter
-                    return row, col
-                counter += row_length
-            raise ValueError(f"Tile {tile} not found in grid structure.")
-
-        # Parcourir les IDs et les tuiles correspondantes
-        for tile, ids in tile_to_ids.items():
-            for id_ in ids:
-                try:
-                    # Récupérer la ligne et la colonne de la tuile
-                    row, col = get_row_col(tile)
-                    resource = self.tile_grid[row][col]
-                    number = self.grid[row][col]
-
-                    # Ajouter la ressource et le numéro au dictionnaire
-                    if id_ not in intersection_resources:
-                        intersection_resources[id_] = []
-                    intersection_resources[id_].append({number: resource})
-                except (IndexError, ValueError) as e:
-                    print(f"Error processing tile {tile} for ID {id_}: {e}")
-
-        # Trier les ID par ordre croissant
-        sorted_intersections = dict(sorted(intersection_resources.items()))
-        self.positions_grid = sorted_intersections
-
-        print(sorted_intersections)
-        return 
+        return adjacent_to_each_position.get(position)
+    # IS THE POSITION VALID OR NOT
     
+    def is_adjacent_valid(self, row, col, num):
+        adjacent_numbers = self.get_adjacent(row, col)
+
+        if num in adjacent_numbers:
+            return False
+
+        if (num == 2 and 12 in adjacent_numbers) or (num == 12 and 2 in adjacent_numbers):
+            return False
+        if (num == 8 and 6 in adjacent_numbers) or (num == 6 and 8 in adjacent_numbers):
+            return False
+
+        return True
+    
+    def is_settlement_position_available(self, number):
+        """
+        Checks if a settlement position is available.
+
+        Args:
+            number (int): The position number to check.
+
+        Returns:
+            bool: True if the position is available, False otherwise.
+        """
+        return number in self.settlement_positions
+    
+    def is_road_position_available(self, number):
+        """
+        Checks if a road position is available.
+
+        Args:
+            number (int): The position number to check.
+
+        Returns:
+            bool: True if the position is available, False otherwise.
+        """
+        return number in self.road_positions
+    
+    # DELETE THE SETTLEMENT OR ROAD POSITIONS FROM THE BOARD
+
     def delete_settlement_position(self, number):
         """
         Deletes a position and its adjacent positions from settlement_positions.
@@ -296,23 +365,21 @@ class Board:
         Args:
             number (int): The position number to be deleted.
         """
-        # Remove the specified number if it exists in settlement_positions
-        if number in self.settlement_positions:
+        if self.is_settlement_position_available(number):
             self.settlement_positions.remove(number)
 
-        # Get adjacent positions and remove them from settlement_positions
         adjacent_positions = self.get_adjacents_for_positions(number)
         for adjacent in adjacent_positions:
-            if adjacent in self.settlement_positions:
+            if self.is_settlement_position_available(adjacent):
                 self.settlement_positions.remove(adjacent)
+
 
     def delete_road_position(self, number):
         """
-        Deletes a position  from road_positions.
+        Deletes a position from road_positions.
 
         Args:
             number (int): The position number to be deleted.
         """
-        # Remove the specified number if it exists in settlement_positions
-        if number in self.road_positions:
+        if self.is_road_position_available(number):
             self.road_positions.remove(number)
