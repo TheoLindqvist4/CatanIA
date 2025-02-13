@@ -38,7 +38,7 @@ class Game_2_players:
 
         player.player_settlement -= 1
         self.board.delete_settlement_position(position)
-        player.player_numbers.add(position)
+        player.player_settlement_position.add(position)
 
         return f"Settlement placed at position {position}."
     
@@ -86,10 +86,12 @@ class Game_2_players:
                 print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
                 available_settlements = self.board.get_available_settlements()
                 print("Available settlements:", available_settlements)
+
                 position = self.get_user_number()
                 settlement_message = self.place_settlement(player_num, position)
                 print(settlement_message)
                 print(f"you have now a total of= {self.players[player_num].player_settlement} settlements")
+
 
                 if "Settlement placed" in settlement_message:
                     placed = True  # Stop the settlement loop after one successful placement
