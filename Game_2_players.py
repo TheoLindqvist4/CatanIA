@@ -8,19 +8,9 @@ class Game_2_players:
     player_order = [1, 2]
     
     def __init__(self):
-        # Create player instances
-        self.players = {
-            1: Player(),
-            2: Player(),
-        }
-        self.board = Board()
-        self.randomize_order()
-        self.print_order() 
-        self.placing_first_settlement()  
-        self.placing_second_settlement()
+        self.game()
         
-
-        
+    
     def randomize_order(self):
         random.shuffle(self.player_order)
 
@@ -150,6 +140,24 @@ class Game_2_players:
         print("Player turn order:", self.player_order)
         return
     
+
+    def game(self):
+        # Create player instances
+        self.players = {
+            1: Player(),
+            2: Player(),
+        }
+        self.board = Board()
+        self.randomize_order()
+        self.print_order() 
+        self.placing_first_settlement()  
+        self.placing_second_settlement()
+        return
+
+
+
+
+
     # ASK IN THE TERMINAL FOR THE NUMBER OF THE POSITION
     
     @staticmethod
@@ -160,6 +168,8 @@ class Game_2_players:
                 return number
             except ValueError:
                 print("Invalid input. Please enter a valid number.")
+
+
 
 
 
