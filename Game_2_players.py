@@ -153,6 +153,7 @@ class Game_2_players:
         self.dice_2 = Dice()
         self.randomize_order()
         self.print_order() 
+        self.turn(self.turn_number)
         self.placing_first_settlement()  
         self.placing_second_settlement()
         return
@@ -168,7 +169,11 @@ class Game_2_players:
         total_dice = self.dice_1.dice_value + self.dice_2.dice_value
         print(f"The total of the dice is: {total_dice}")
         
-        
+        self.players[players_turn].player_ressources['Brick'] +=1
+        self.players[players_turn].player_ressources['Wood'] +=1
+        self.players[players_turn].player_ressources['Sheep'] +=1
+        self.players[players_turn].player_ressources['Weat'] +=2
+        self.players[players_turn].player_ressources['Ore'] +=2
 
         can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards = self.players[players_turn].check_player_actions()
         
