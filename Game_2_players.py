@@ -79,40 +79,67 @@ class Game_2_players:
     # FIRST TURN OF THE GAME, PLACING THE SETTLEMENTS
 
     def placing_first_settlement(self):
-        for player_num in self.player_order:
-            while self.players[player_num].player_settlement > 0:
-                print(f"Player {player_num}, please choose a settlement position on the board:")
+        for player_num in self.player_order:  # Normal player order
+            placed = False  # Ensure only one settlement is placed
+
+            while not placed:
+                print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
+                available_settlements = self.board.get_available_settlements()
+                print("Available settlements:", available_settlements)
+                position = self.get_user_number()
+                settlement_message = self.place_settlement(player_num, position)
+                print(settlement_message)
+                print(f"you have now a total of= {self.players[player_num].player_settlement} settlements")
+
+                if "Settlement placed" in settlement_message:
+                    placed = True  # Stop the settlement loop after one successful placement
+                    
+                    print(f"PLAYER {player_num}, PLEASE CHOOSE A ROAD POSITION ON THE BOARD:")
+                    available_roads = self.board.get_available_road_from_settlement(position)
+                    print("Available roads:", available_roads)
+
+                    while True:
+                        road_position = self.get_user_number()
+                        if road_position in available_roads:
+                            road_message = self.place_road(player_num, road_position)
+                            print(road_message)
+                            print("")
+                            break
+                        else:
+                            print("Invalid choice. Please choose a valid road position from the list:", available_roads)
+
+            print("")  # Space between players for readability
+
+
+
+    def placing_second_settlement(self):
+        for player_num in reversed(self.player_order):  # Reverse the player order
+            placed = False  # Ensure only one settlement is placed
+
+            while not placed:
+                print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
+                available_settlements = self.board.get_available_settlements()
+                print("Available settlements:", available_settlements)
                 position = self.get_user_number()
                 settlement_message = self.place_settlement(player_num, position)
                 print(settlement_message)
 
                 if "Settlement placed" in settlement_message:
-                    print(f"Player {player_num}, please choose a road position on the board:")
-                    position = self.get_user_number()
-                    road_message = self.place_road(player_num , position)
-                    print(road_message)
-                    print("")
-                    break
+                    placed = True  # Stop the settlement loop after one successful placement
+                    
+                    print(f"PLAYER {player_num}, PLEASE CHOOSE A ROAD POSITION ON THE BOARD:")
+                    available_roads = self.board.get_available_road_from_settlement(position)
+                    print("Available roads:", available_roads)
 
-            print("")
-
-
-    def placing_second_settlement(self):
-        for player_num in reversed(self.player_order):  # Reverse the player order
-            while self.players[player_num].player_settlement > 0:
-                print(f"Player {player_num} please choose a settlement position on the board:")
-                position = self.get_user_number()
-                settlement_message = self.place_settlement(player_num , position)
-                print(settlement_message)
-
-                if "Settlement placed" in settlement_message:
-                    print(f"Player {player_num}, please choose a road position on the board:")
-                    position = self.get_user_number()
-                    road_message = self.place_road(player_num , position)
-                    print(road_message)
-                    print("")
-                    break
-
+                    while True:
+                        road_position = self.get_user_number()
+                        if road_position in available_roads:
+                            road_message = self.place_road(player_num, road_position)
+                            print(road_message)
+                            print("")
+                            break
+                        else:
+                            print("Invalid choice. Please choose a valid road position from the list:", available_roads)
             print("")
 
 

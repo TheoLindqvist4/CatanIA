@@ -20,6 +20,7 @@ class Player:
         self.player_cities = 4
         self.player_roads = 15
         self.player_road_position = set()
+        self.player_settlement_position = set()
 
         self.player_longest_road = False
         self.player_army = False
@@ -30,3 +31,13 @@ class Player:
         self.player_brick_port = False
         self.player_wood_port = False
         self.player_3_to_1_port = False
+
+
+    def get_player_road_positions(self):
+        return self.player_road_position
+    
+    def get_player_numbers(self):
+        return self.player_numbers
+    
+    def get_player_settlement_position(self):
+        return self.player_settlement_position

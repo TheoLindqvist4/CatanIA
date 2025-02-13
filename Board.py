@@ -317,6 +317,87 @@ class Board:
             return "The number must be between 1 and 54."
 
         return adjacent_to_each_position.get(position)
+    
+    def get_adjacent_roads_from_road(self,road_positiion):
+        adjacent_road_to_road_position = {
+            1: [2,7],
+            2: [1,8],
+            3: [2,4,8],
+            4: [3,5,9],
+            5: [4,6,9],
+            6: [5,10],
+            7: [1,11,12],
+            8: [2,3,13,14],
+            9: [4,5,15,16],
+            10: [6,17,18],
+            11: [7,12,19],
+            12: [7,11,13,20],
+            13: [8,12,14,20],
+            14: [8,13,15,21],
+            15: [9,14,16,21],
+            16: [9,14,16,21],
+            17: [10,16,18,22],
+            18: [10,17,23],
+            19: [11,24,25],
+            20: [12,13,26,27],
+            21: [14,15,28,29],
+            22: [16,17,30,31],
+            23: [18,32,33],
+            24: [19,25,34],
+            25: [19,24,26,35],
+            26: [20,25,27,35],
+            27: [20,26,28,36],
+            28: [21,27,29,36],
+            29: [21,28,30,37],
+            30: [22,29,31,37],
+            31: [22,30,32,38],
+            32: [23,31,33,38],
+            33: [23,32,39],
+            34: [24,40],
+            35: [25,26,41,42],
+            36: [27,28,43,44],
+            37: [29,30,45,46],
+            38: [31,32,47,48],
+            39: [33,49],
+            40: [34,41,50],
+            41: [35,40,42,50],
+            42: [35,41,43,51],
+            43: [36,42,44,51],
+            44: [36,43,45,52],
+            45: [37,44,46,52],
+            46: [37,45,47,53],
+            47: [38,46,48,53],
+            48: [38,47,49,54],
+            49: [39,48,54],
+            50: [40,41,55],
+            51: [42,42,56,57],
+            52: [44,45,58,59],
+            53: [46,47,60,61],
+            54: [48,49,62],
+            55: [50,56,63],
+            56: [51,55,57,63],
+            57: [51,56,58,64],
+            58: [52,57,59,64],
+            59: [52,58,60,65],
+            60: [53,59,61,65],
+            61: [53,60,62,66],
+            62: [54,61,66],
+            63: [55,56,67],
+            64: [57,58,68,69],
+            65: [59,60,70,71],
+            66: [61,62,72],
+            67: [63,68],
+            68: [64,67,69],
+            69: [64,68,70],
+            70: [65,69,71],
+            71: [65,70,72],
+            72: [66,71]
+        }
+        if not isinstance(road_positiion, int) or not (1 <= road_positiion <= 72):
+            return "The number must be between 1 and 72."
+
+        return adjacent_road_to_road_position.get(road_positiion)
+
     # IS THE POSITION VALID OR NOT
     
     def is_adjacent_valid(self, row, col, num):
@@ -383,3 +464,15 @@ class Board:
         """
         if self.is_road_position_available(number):
             self.road_positions.remove(number)
+
+
+    # GETTERS
+
+    def get_available_settlements(self):
+        return self.settlement_positions
+    
+    def get_available_road(self):
+        return self.road_positions
+    
+    def get_available_road_from_settlement(self,settlement_position):
+        return self.get_adjacent_roads_from_settlement(settlement_position)
