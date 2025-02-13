@@ -6,6 +6,7 @@ import random
 
 class Game_2_players:
     player_order = [1, 2]
+    turn_number = 0
     
     def __init__(self):
         self.game()
@@ -148,6 +149,8 @@ class Game_2_players:
             2: Player(),
         }
         self.board = Board()
+        self.dice_1 = Dice()
+        self.dice_2 = Dice()
         self.randomize_order()
         self.print_order() 
         self.placing_first_settlement()  
@@ -156,6 +159,47 @@ class Game_2_players:
 
 
 
+    def turn(self, turn_number):
+        players_turn = self.whos_turn_is_it(turn_number)
+        print("")
+        print(f"Player {players_turn}'s turn")
+        self.dice_1.roll_dice()
+        self.dice_2.roll_dice()
+        total_dice = self.dice_1.dice_value + self.dice_2.dice_value
+        print(f"The total of the dice is: {total_dice}")
+        
+        
+
+        can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards = self.players[players_turn].check_player_actions()
+        
+        if can_build_road:
+            print("You can build a road")
+        else:
+            print("You cannot build a road")
+        
+        if can_build_settlement:
+            print("You can build a settlement")
+        else:
+            print("You cannot build a settlement")
+        
+        if can_build_city:
+            print("You can build a city")
+        else:
+            print("You cannot build a city")
+        
+        if can_buy_dev_cards:
+            print("You can buy development cards")
+        else:
+            print("You cannot buy development cards")
+        
+        self.turn_number += 1
+        return
+
+    def whos_turn_is_it(self, turn_number):
+        if turn_number % 2 == 0:
+            return self.player_order[0]
+        else:
+            return self.player_order[1]
 
 
     # ASK IN THE TERMINAL FOR THE NUMBER OF THE POSITION

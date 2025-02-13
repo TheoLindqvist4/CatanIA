@@ -41,3 +41,28 @@ class Player:
     
     def get_player_settlement_position(self):
         return self.player_settlement_position
+
+    def check_player_actions(self):
+        can_build_road = False
+        can_build_settlement = False
+        can_build_city = False
+        can_buy_dev_cards = False
+
+        if self.player_ressources['Brick'] > 0 and self.player_ressources['Wood'] > 0:
+            can_build_road = True
+
+        if (self.player_ressources['Brick'] > 0 and 
+            self.player_ressources['Wood'] > 0 and 
+            self.player_ressources['Sheep'] > 0 and 
+            self.player_ressources['Weat'] > 0):
+            can_build_settlement = True
+
+        if self.player_ressources['Weat'] > 1 and self.player_ressources['Ore'] > 2:
+            can_build_city = True
+
+        if (self.player_ressources['Sheep'] > 0 and 
+            self.player_ressources['Weat'] > 0 and 
+            self.player_ressources['Ore'] > 0):
+            can_buy_dev_cards = True
+
+        return can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards
