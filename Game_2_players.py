@@ -153,9 +153,24 @@ class Game_2_players:
         self.dice_2 = Dice()
         self.randomize_order()
         self.print_order() 
-        self.turn(self.turn_number)
         self.placing_first_settlement()  
         self.placing_second_settlement()
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
+        self.turn(self.turn_number)
         return
 
 
@@ -167,13 +182,8 @@ class Game_2_players:
         self.dice_1.roll_dice()
         self.dice_2.roll_dice()
         total_dice = self.dice_1.dice_value + self.dice_2.dice_value
+        self.give_cards_to_players(total_dice)
         print(f"The total of the dice is: {total_dice}")
-        
-        self.players[players_turn].player_ressources['Brick'] +=1
-        self.players[players_turn].player_ressources['Wood'] +=1
-        self.players[players_turn].player_ressources['Sheep'] +=1
-        self.players[players_turn].player_ressources['Weat'] +=2
-        self.players[players_turn].player_ressources['Ore'] +=2
 
         can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards = self.players[players_turn].check_player_actions()
         
@@ -205,6 +215,35 @@ class Game_2_players:
             return self.player_order[0]
         else:
             return self.player_order[1]
+        
+    def give_cards_to_players(self, dice_number):
+        # Get the positions where the dice_number is present
+        positions = self.board.get_positions_by_dice(dice_number)
+        
+        # Iterate through all the players
+        for player_number, player in self.players.items():
+            # Check if the player has a settlement in any of the matching positions
+            for position, tiles in positions.items():
+                if position in player.player_settlement_position:
+                    # Iterate through the tiles in the position
+                    for tile in tiles:
+                        for resource_value, resource in tile.items():
+                            # Only give the resource if the dice number matches the resource value
+                            if resource_value == dice_number:
+                                # Skip Desert resources
+                                if resource == 'Desert':
+                                    continue
+                                
+                                # Add the appropriate resource to the player's resources
+                                player.player_ressources[resource] += 1
+                                print(f"Player {player_number} receives 1 {resource} for settlement at position {position}")
+
+        return
+
+
+
+
+        
 
 
     # ASK IN THE TERMINAL FOR THE NUMBER OF THE POSITION

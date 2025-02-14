@@ -476,3 +476,16 @@ class Board:
     
     def get_available_road_from_settlement(self,settlement_position):
         return self.get_adjacent_roads_from_settlement(settlement_position)
+    
+    def get_positions_by_dice(self, dice_number):
+        matching_positions = {}
+
+        # Iterate through all positions in the grid
+        for position, tiles in self.positions_grid.items():
+            for tile in tiles:
+                # Check if the dice_number exists in the current tile
+                if dice_number in tile:
+                    matching_positions[position] = tiles
+                    break  # No need to check further tiles for this position
+
+        return matching_positions

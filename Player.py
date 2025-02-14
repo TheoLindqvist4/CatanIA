@@ -14,13 +14,13 @@ class Player:
             'Road builder': 0,
             'Victory Point': 0 
         }
-        self.player_numbers = set()
         self.player_points = 0
         self.player_settlement = 5
         self.player_cities = 4
         self.player_roads = 15
         self.player_road_position = set()
         self.player_settlement_position = set()
+        self.player_city_position = set()
 
         self.player_longest_road = False
         self.player_army = False
@@ -36,8 +36,8 @@ class Player:
     def get_player_road_positions(self):
         return self.player_road_position
     
-    def get_player_numbers(self):
-        return self.player_numbers
+    def get_player_city_position(self):
+        return self.player_city_position
     
     def get_player_settlement_position(self):
         return self.player_settlement_position
