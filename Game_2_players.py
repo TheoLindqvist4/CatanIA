@@ -66,6 +66,41 @@ class Game_2_players:
 
         return True, "Valid position for road."
 
+    
+    def check_valid_settlement_once_game_has_begun(self, player):
+        all_road_positions = self.players[player].player_road_position
+        valid_settlement_positions = []
+
+        for road_position in all_road_positions:
+            adjacent_settlements = self.board.get_adjacent_settlement_from_road(road_position)
+            if adjacent_settlements is None:
+                continue
+
+            for settlement_position in adjacent_settlements:
+                is_valid, _ = self.check_if_position_settlement_is_valid(settlement_position)
+                if is_valid:
+                    valid_settlement_positions.append(settlement_position)
+
+        valid_settlement_positions = list(set(valid_settlement_positions))
+        return valid_settlement_positions or []
+
+
+    def check_valid_road_once_game_has_begun(self, player):
+        all_road_positions = self.players[player].player_road_position
+        valid_road_positions = []
+
+        for road_position in all_road_positions:
+            adjacent_roads = self.board.get_adjacent_roads_from_road(road_position)
+            if adjacent_roads is None:
+                continue
+
+            for road_position in adjacent_roads:
+                is_valid, _ = self.check_if_position_road_is_valid(road_position)
+                if is_valid:
+                    valid_road_positions.append(road_position)
+
+        valid_road_positions = list(set(valid_road_positions))
+        return valid_road_positions or []
 
     # FIRST TURN OF THE GAME, PLACING THE SETTLEMENTS
 
@@ -151,27 +186,65 @@ class Game_2_players:
         self.board = Board()
         self.dice_1 = Dice()
         self.dice_2 = Dice()
-        self.randomize_order()
-        self.print_order() 
-        self.placing_first_settlement()  
-        self.placing_second_settlement()
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        self.turn(self.turn_number)
-        return
+        # self.randomize_order()
+        # self.print_order() 
+        # self.placing_first_settlement()  
+        # self.placing_second_settlement()
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+        # self.turn(self.turn_number)
+
+
+        self.place_road(1,11)
+        self.place_road(1,12)
+        self.place_road(1,20)
+        self.place_road(1,26)
+        self.place_road(1,25)
+        self.place_road(1,19)
+        self.place_road(1,27)
+        self.place_road(1,7)
+
+        
+
+
+        self.place_road(2,3)
+        self.place_road(2,16)
+
+        valid_positions = self.check_valid_settlement_once_game_has_begun(1)    
+        print(f"Player 1 has {valid_positions} valid positions")
+        valid_positions = self.check_valid_settlement_once_game_has_begun(2)
+        print(f"Player 2 has {valid_positions} valid positions")
+    
+        valid_road_positions = self.check_valid_road_once_game_has_begun(1)    
+        print(f"Player 1 has {valid_road_positions} valid road positions")
+        valid_road_positions = self.check_valid_road_once_game_has_begun(2)
+        print(f"Player 2 has {valid_road_positions} valid road positions")
+
+
+
+        print("")
+        print(f"Player 1 roads: {self.players[1].get_player_road_positions()}")
+        longest_road = self.find_longest_path(1)
+        print(f"Player 1 has a max length road of: {longest_road}")
+
+        print(f"Player 2 roads: {self.players[2].get_player_road_positions()}")
+        longest_road = self.find_longest_path(2)
+        print(f"Player 2 has a max length road of: {longest_road}")
+
+        return    
 
 
 
@@ -241,6 +314,105 @@ class Game_2_players:
         return
 
 
+    ###############################################################################
+     ###############################################################################
+      ###############################################################################
+       ###############################################################################
+
+
+    def find_longest_path(self, player_number):
+        """
+        Finds the longest road (number of road segments) for the given player,
+        taking branching into account (only one branch counts at an intersection).
+        
+        The method does the following:
+        1. For each road owned by the player, “infer” its two endpoints (intersections)
+            by grouping its adjacent roads into clusters that are mutually adjacent.
+        2. Build an undirected graph where each unique intersection is a node and 
+            each player road (edge) connects its two intersections.
+        3. Run a DFS on this graph (avoiding reusing roads) to find the longest path.
+        
+        Args:
+            player_number (int): The player's number whose longest road is calculated.
+            
+        Returns:
+            int: The length (number of road segments) of the longest road.
+        """
+        player_roads = self.players[player_number].get_player_road_positions()
+        
+        def get_intersections_for_road(road):
+            """
+            Given a road, use its list of adjacent roads (from the board’s mapping)
+            to “cluster” them into groups that are all mutually adjacent. Each cluster
+            represents the other roads that share one intersection with this road.
+            
+            For example, if road 7 has adjacent roads [1, 11, 12] and 11 and 12 are adjacent,
+            then the clusters are [{1}, {11, 12}]. We then define the two endpoints (intersections)
+            for road 7 as:
+                - frozenset({7} ∪ {1})       i.e. frozenset({1, 7})
+                - frozenset({7} ∪ {11, 12})   i.e. frozenset({7, 11, 12})
+            """
+            nbrs = self.board.get_adjacent_roads_from_road(road)
+            clusters = []
+            for n in nbrs:
+                placed = False
+                for cluster in clusters:
+                    # If n is adjacent to every road already in the cluster,
+                    # then it belongs in that cluster.
+                    if all(n in self.board.get_adjacent_roads_from_road(other) for other in cluster):
+                        cluster.add(n)
+                        placed = True
+                        break
+                if not placed:
+                    clusters.append({n})
+            # Every road has two endpoints. If we found only one cluster, use an empty cluster
+            # for the other endpoint.
+            if len(clusters) == 1:
+                clusters.append(set())
+            # Define each endpoint as the union of the road itself with one cluster.
+            ep1 = frozenset({road} | clusters[0])
+            ep2 = frozenset({road} | clusters[1])
+            return (ep1, ep2)
+        
+        # Compute endpoints for each road.
+        road_endpoints = {}
+        for road in player_roads:
+            road_endpoints[road] = get_intersections_for_road(road)
+        
+        # Build a graph: keys are intersections (nodes), values are lists of tuples
+        # (neighbor_intersection, road) representing an edge.
+        graph = {}
+        for road, (ep1, ep2) in road_endpoints.items():
+            for ep in (ep1, ep2):
+                if ep not in graph:
+                    graph[ep] = []
+            # Add the bidirectional edge (annotated with the road number so we avoid reusing it)
+            graph[ep1].append((ep2, road))
+            graph[ep2].append((ep1, road))
+        
+        # Now perform DFS to find the longest simple path (by counting edges)
+        longest = 0
+        def dfs(intersection, used_roads):
+            max_length = 0
+            for neighbor, road in graph.get(intersection, []):
+                if road in used_roads:
+                    continue
+                used_roads.add(road)
+                path_length = 1 + dfs(neighbor, used_roads)
+                max_length = max(max_length, path_length)
+                used_roads.remove(road)
+            return max_length
+        
+        for intersection in graph:
+            longest = max(longest, dfs(intersection, set()))
+        return longest
+
+
+
+     ###############################################################################
+      ###############################################################################
+       ###############################################################################
+        ###############################################################################
 
 
         
