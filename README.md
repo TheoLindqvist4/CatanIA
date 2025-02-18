@@ -59,6 +59,12 @@ CatanIA/
 - 🏁 **Début de la partie** : Chaque joueur place ses colonies et routes initiales.
 - 🔄 **Tours de jeu** : Chaque joueur lance les dés, reçoit des ressources et peut construire.
 
+## Projet lié : Full Stack Catan
+
+Pour plus de détails sur la génération visuelle du plateau avec une application Full Stack utilisant une API, vous pouvez consulter le dépôt suivant :
+
+[Full Stack Catan - Génération du plateau visuellement avec l'application Full Stack API](https://github.com/TheoLindqvist4/FullStackCatan)
+
 ## ✨ Auteurs
 
 - [Théo Lindqvist](https://github.com/TheoLindqvist4) 🖊️👨‍💻
