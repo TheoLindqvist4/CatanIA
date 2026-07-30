@@ -142,6 +142,39 @@ class GameState:
         #: Roads still owed by Road Building, which cost nothing.
         self.free_roads = 0
 
+        # ----------------------------------------------------------------- #
+        # The public record — what everyone at the table has watched happen.  #
+        # ----------------------------------------------------------------- #
+        #
+        # The observation is otherwise a pure snapshot, and a snapshot cannot express
+        # "they have hoarded ore for three turns, cities are coming". These counters are the
+        # cheapest way to give an agent a memory, and every one of them is something any
+        # player could write down while watching: the dice are called out, production is
+        # determined by the board and the roll, and what a build costs is on the card.
+        #
+        # Nothing derived from a *hidden* quantity belongs here. In particular there is no
+        # per-player hand estimate: a robber steal moves a card whose identity only the two
+        # players involved ever learn, so any running total of an opponent's hand would be
+        # either wrong or a leak. Counting what went in and what visibly came out is the
+        # honest version, and it is what a card-counting human actually keeps.
+
+        #: How often each total has been rolled, indexed by the roll. Index 0/1 unused.
+        #: Informative in its own right under Balanced Dice, where the deck of 36 is
+        #: consumed rather than resampled, so what has gone says what is left.
+        self.roll_counts = [0] * 13
+        #: Cumulative resources each player has *received from production*. Public: the
+        #: board, the roll and the buildings are all on the table.
+        self.produced = [None] + [empty_hand() for _ in range(num_players)]
+        #: Cumulative resources each player has *spent* on builds and development cards.
+        #: Public: costs are fixed and every purchase is visible.
+        self.spent = [None] + [empty_hand() for _ in range(num_players)]
+        #: How many development cards each player has bought. The count is public; which
+        #: cards they are is not, and is not recorded.
+        self.dev_bought = [0] * (num_players + 1)
+        #: The turn each player last put something on the board. A cheap proxy for "are
+        #: they saving up for something".
+        self.last_build_turn = [0] * (num_players + 1)
+
         #: Whether the dice have been rolled this turn. A Knight may be played before
         #: rolling, so the robber phase needs to know where to return to.
         self.rolled_this_turn = False
@@ -314,6 +347,11 @@ class GameState:
         other.robber_tile = self.robber_tile
         other.pending_discards = list(self.pending_discards)
         other.discards_owed = list(self.discards_owed)
+        other.roll_counts = list(self.roll_counts)
+        other.produced = [None] + [list(h) for h in self.produced[1:]]
+        other.spent = [None] + [list(h) for h in self.spent[1:]]
+        other.dev_bought = list(self.dev_bought)
+        other.last_build_turn = list(self.last_build_turn)
         other.turn_number = self.turn_number
         other.last_roll = self.last_roll
         other.winner = self.winner

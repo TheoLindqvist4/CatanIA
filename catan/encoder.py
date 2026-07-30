@@ -32,6 +32,8 @@ per-tile, per-vertex or per-road block and reshape it — a graph or convolution
     vertices   54 x 16   owner, piece, harbour, pip potential, buildability
     roads      72 x  6   owner, buildability
     players     4 x 30   hands and holdings, masked for opponents
+    history     4 x 12   the public record: production, spending, purchases, idleness
+    rolls           12   how often each total has come up, and how far in we are
     global          36   phase, last roll, bank, ruleset, turn bookkeeping
 
 Every value is scaled into roughly ``[0, 1]``, using exact maxima where one exists (a
@@ -75,6 +77,8 @@ MAX_KNIGHTS = DECK_COUNTS[DevCard.KNIGHT]
 #: Turn counts are unbounded in principle; games run a few hundred turns, so this is the
 #: soft cap beyond which the feature saturates.
 TURN_SCALE = 400
+#: Turns without building. Ten is already a long drought in a 1v1 game.
+IDLE_SCALE = 20.0
 
 #: Rolls run 2..12.
 ROLLS = tuple(range(2, 13))
@@ -136,6 +140,17 @@ PLAYER_FEATURES = (
     + 1                   # discards still owed
 )
 
+#: Per player, in the public record: cumulative production and cumulative spending, both
+#: per resource, plus development cards bought and how long since they last built.
+HISTORY_FEATURES = NUM_RESOURCES + NUM_RESOURCES + 1 + 1
+
+#: Rolls 2..12, plus how far into the game the histogram is.
+ROLL_HISTORY_FEATURES = len(ROLLS) + 1
+
+#: Everything ever produced by one player is bounded well below this; used only to keep the
+#: value in a sane range rather than as a hard cap, so it is clipped.
+PRODUCTION_SCALE = 120.0
+
 GLOBAL_FEATURES = (
     len(Phase)            # phase one-hot
     + len(ROLLS) + 1      # last roll one-hot, plus "not rolled yet"
@@ -158,6 +173,8 @@ def _build_layout():
         ("vertices", NUM_VERTICES * VERTEX_FEATURES),
         ("roads", NUM_ROADS * ROAD_FEATURES),
         ("players", MAX_PLAYERS * PLAYER_FEATURES),
+        ("history", MAX_PLAYERS * HISTORY_FEATURES),
+        ("rolls", ROLL_HISTORY_FEATURES),
         ("global", GLOBAL_FEATURES),
     ):
         spans[name] = slice(offset, offset + width)
@@ -173,6 +190,7 @@ SHAPES = {
     "vertices": (NUM_VERTICES, VERTEX_FEATURES),
     "roads": (NUM_ROADS, ROAD_FEATURES),
     "players": (MAX_PLAYERS, PLAYER_FEATURES),
+    "history": (MAX_PLAYERS, HISTORY_FEATURES),
 }
 
 
@@ -282,6 +300,7 @@ def encode(state, me=None):
     _encode_vertices(state, out, me, slots)
     _encode_roads(state, out, me, slots)
     _encode_players(state, out, me, slots)
+    _encode_history(state, out, me, slots)
     _encode_global(state, out, me)
     return out
 
@@ -432,6 +451,40 @@ def _encode_players(state, out, me, slots):
         out[at] = state.discards_owed[player] / MAX_OF_ONE_RESOURCE
 
 
+def _encode_history(state, out, me, slots):
+    """The public record: what everyone at the table has watched happen.
+
+    Without this the observation is a pure snapshot, and a snapshot cannot express "they
+    have hoarded ore for three turns, cities are coming". Every number here is one any
+    player could have written down while watching — see the note on ``GameState``'s public
+    record for why there is no opponent hand estimate among them.
+
+    Rotated into slot order like the player block, so one network still plays every seat.
+    """
+    base = LAYOUT["history"].start
+    for player, slot in slots.items():
+        at = base + slot * HISTORY_FEATURES
+
+        produced = state.produced[player]
+        spent = state.spent[player]
+        for resource in range(NUM_RESOURCES):
+            out[at + resource] = min(produced[resource] / PRODUCTION_SCALE, 1.0)
+            out[at + NUM_RESOURCES + resource] = min(spent[resource] / PRODUCTION_SCALE, 1.0)
+        at += 2 * NUM_RESOURCES
+
+        out[at] = min(state.dev_bought[player] / DEV_DECK_SIZE, 1.0)
+        at += 1
+        # how long they have gone without putting anything down
+        idle = state.turn_number - state.last_build_turn[player]
+        out[at] = min(idle / IDLE_SCALE, 1.0)
+
+    at = LAYOUT["rolls"].start
+    total = sum(state.roll_counts)
+    for position, roll in enumerate(ROLLS):
+        out[at + position] = state.roll_counts[roll] / total if total else 0.0
+    out[at + len(ROLLS)] = min(total / TURN_SCALE, 1.0)
+
+
 def _encode_global(state, out, me):
     at = LAYOUT["global"].start
 
@@ -493,7 +546,7 @@ def _validate():
     """Layout consistency, at import."""
     assert LAYOUT["global"].stop == SIZE
     covered = 0
-    for name in ("tiles", "vertices", "roads", "players", "global"):
+    for name in ("tiles", "vertices", "roads", "players", "history", "rolls", "global"):
         assert LAYOUT[name].start == covered, f"{name} does not follow the previous block"
         covered = LAYOUT[name].stop
     assert covered == SIZE

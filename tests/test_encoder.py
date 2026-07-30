@@ -17,6 +17,7 @@ from catan.rulesets import ALL, BASE_GAME, RANKED_1V1
 from catan.state import MAX_PLAYERS, GameState, NO_OWNER, Phase, Piece
 from helpers import (
     complete_setup,
+    scramble_hidden_state,
     enough_for_everything,
     fresh,
     give,
@@ -25,6 +26,20 @@ from helpers import (
     put_building,
     put_road,
 )
+
+
+@pytest.fixture
+def played_game():
+    """A finished game, so the public record has something in it."""
+    from catan.agents import HeuristicAgent
+    from catan.env import CatanEnv
+
+    env = CatanEnv(num_players=2, max_turns=400)
+    observation, info = env.reset(seed=4)
+    agents = {1: HeuristicAgent(4), 2: HeuristicAgent(99)}
+    while not info["done"]:
+        observation, _, _, _, info = env.step(agents[info["player"]](observation, info))
+    return env.state
 
 
 def mid_game(seed=1, ruleset=None, num_players=2):
@@ -45,9 +60,10 @@ def mid_game(seed=1, ruleset=None, num_players=2):
 # =========================================================================== #
 
 def test_the_layout_covers_the_vector_exactly_once():
+    """Derived from LAYOUT rather than from a written-down list of blocks, so adding a
+    block cannot leave a hole that only shows up as a silently mis-read observation."""
     covered = 0
-    for name in ("tiles", "vertices", "roads", "players", "global"):
-        span = E.LAYOUT[name]
+    for name, span in E.LAYOUT.items():
         assert span.start == covered, f"a gap or overlap before {name}"
         covered = span.stop
     assert covered == E.SIZE
@@ -467,3 +483,68 @@ def test_encoding_is_fast_enough_to_sit_in_the_loop():
     state = mid_game()
     elapsed = timeit.timeit(lambda: E.encode(state, 1), number=2000) / 2000
     assert elapsed < 5e-3, f"{elapsed * 1e6:.0f} us per observation is too slow"
+
+
+# =========================================================================== #
+# THE PUBLIC RECORD                                                           #
+# =========================================================================== #
+
+def test_the_public_record_is_public(played_game):
+    """The history block is the newest place a leak could hide, so it gets its own check
+    on top of the whole-vector detectors above: rewrite every hidden thing at constant
+    public counts and require the block not to move by a single float."""
+    state = played_game
+    for me in state.players:
+        before = E.encode(state, me)[E.LAYOUT["history"]]
+        rolls_before = E.encode(state, me)[E.LAYOUT["rolls"]]
+
+        scrambled = scramble_hidden_state(state.clone(), me)
+        after = E.encode(scrambled, me)[E.LAYOUT["history"]]
+        rolls_after = E.encode(scrambled, me)[E.LAYOUT["rolls"]]
+
+        assert before == after, "the public record moved when hidden cards changed"
+        assert rolls_before == rolls_after
+
+
+def test_the_public_record_actually_records_something(played_game):
+    """A block of zeros would pass every leak test ever written."""
+    state = played_game
+    history = E.encode(state, 1)[E.LAYOUT["history"]]
+    rolls = E.encode(state, 1)[E.LAYOUT["rolls"]]
+    assert any(v > 0 for v in history), "nothing was recorded"
+    assert any(v > 0 for v in rolls)
+    assert sum(rolls[:len(E.ROLLS)]) == pytest.approx(1.0), "the histogram is not a distribution"
+
+
+def test_the_public_record_is_rotated_like_everything_else(played_game):
+    """Slot 0 is always me. Without this, one network could not play both seats."""
+    state = played_game
+    width = E.HISTORY_FEATURES
+    for me in state.players:
+        block = E.encode(state, me)[E.LAYOUT["history"]]
+        mine = block[:width]
+        expected = [
+            min(state.produced[me][r] / E.PRODUCTION_SCALE, 1.0) for r in range(5)
+        ]
+        assert mine[:5] == pytest.approx(expected)
+
+
+def test_production_and_spending_are_counted(played_game):
+    state = played_game
+    for player in state.players:
+        assert sum(state.produced[player]) > 0, "nobody ever produced anything"
+        assert sum(state.spent[player]) > 0, "nobody ever paid for anything"
+    assert sum(state.roll_counts) > 0
+
+
+def test_the_record_survives_a_clone(played_game):
+    state = played_game
+    clone = state.clone()
+    assert clone.roll_counts == state.roll_counts
+    assert clone.produced == state.produced
+    assert clone.spent == state.spent
+    assert clone.dev_bought == state.dev_bought
+    assert clone.last_build_turn == state.last_build_turn
+    # and is a copy, not a reference
+    clone.produced[1][0] += 99
+    assert clone.produced[1][0] != state.produced[1][0]

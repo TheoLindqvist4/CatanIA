@@ -17,7 +17,7 @@ implementation that could disagree with the engine, which is the problem the rew
 import itertools
 import pathlib
 
-from catan import action_space, rules
+from catan import action_space, encoder, rules
 from catan.actions import ActionType
 from catan.agents import DIFFICULTY, GreedyAgent, HeuristicAgent, RandomAgent
 from catan.board import GENERIC_HARBOUR
@@ -51,14 +51,28 @@ LEARNED_CHECKPOINT = pathlib.Path("checkpoints/policy.pt")
 
 
 def _register_learned():
+    """Offer a trained policy, but only if it was trained on *this* observation.
+
+    Adding a feature to the encoder changes ``encoder.SIZE``, and a checkpoint from before
+    that change will happily load and then fail with a shape error on the first move. The
+    check is cheap and the alternative is a game that dies mid-turn.
+    """
     if not LEARNED_CHECKPOINT.is_file():
         return
     try:
         from training.agent import PolicyAgent
     except ImportError:
         return                                    # no torch on this checkout
+
+    try:
+        agent = PolicyAgent.load(LEARNED_CHECKPOINT)
+        if agent.net.obs_size != encoder.SIZE:
+            return                                # trained on a different observation
+    except Exception:
+        return                                    # unreadable or from another version
+
     OPPONENTS["learned"] = lambda seed: PolicyAgent(
-        PolicyAgent.load(LEARNED_CHECKPOINT).net, temperature=0.35, seed=seed
+        agent.net, temperature=0.35, seed=seed
     )
 
 

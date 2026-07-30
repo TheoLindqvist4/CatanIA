@@ -788,6 +788,7 @@ def _apply_build(state, player, action):
         card = state.dev_deck.pop()
         state.dev_cards[player][card] += 1
         state.dev_cards_new[player][card] += 1
+        state.dev_bought[player] += 1
         state.events.append(Event(EventKind.BOUGHT_DEV, player))
         # A Victory Point card can win the game the moment it is drawn.
         _check_for_winner(state, player)
@@ -853,11 +854,14 @@ def _pay(state, player, cost):
     resources.pay(state.hands[player], cost)
     for resource, amount in enumerate(cost):
         state.bank[resource] += amount
+        # everyone watching sees what a purchase costs; see GameState's public record
+        state.spent[player][resource] += amount
 
 
 def _put_building(state, player, vertex, piece):
     state.vertex_owner[vertex] = player
     state.vertex_piece[vertex] = piece
+    state.last_build_turn[player] = state.turn_number
     state.settlements_left[player] -= 1
     state.events.append(
         Event(EventKind.BUILT, player, position=vertex, other=int(piece)))
@@ -866,6 +870,7 @@ def _put_building(state, player, vertex, piece):
 def _put_road(state, player, road):
     state.edge_owner[road] = player
     state.roads_left[player] -= 1
+    state.last_build_turn[player] = state.turn_number
     state.events.append(Event(EventKind.BUILT, player, position=road, other=0))
 
 
@@ -909,6 +914,7 @@ def roll_dice(state):
 
     roll = first + second
     state.last_roll = roll
+    state.roll_counts[roll] += 1
     state.rolled_this_turn = True
     state.events.append(Event(EventKind.ROLLED, state.turn_player, amount=roll))
 
@@ -986,6 +992,7 @@ def distribute(state, roll):
         for player, amount in grants:
             state.hands[player][resource] += amount
             state.bank[resource] -= amount
+            state.produced[player][resource] += amount
             paid[player][resource] = amount
             state.events.append(
                 Event(EventKind.PRODUCED, player, resource=resource, amount=amount))

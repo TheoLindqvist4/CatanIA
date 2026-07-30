@@ -166,9 +166,16 @@ def test_a_losing_seat_gets_negative_returns(net):
     returns = rollout.returns.numpy()
     assert returns.min() < -0.5, "nobody was ever told they lost"
     assert returns.max() > 0.5, "nobody was ever told they won"
-    assert abs(float(returns.mean())) < 0.35, (
-        f"self-play should be roughly zero-sum, got mean {returns.mean():.3f}"
-    )
+
+    # The two assertions above are the whole content: a bug that dropped the loser's
+    # reward leaves one tail empty. It is tempting to also assert something about the
+    # *mean* or about what share of transitions is negative, and both are wrong here.
+    # `returns` is `advantage + value`, so with an untrained critic every transition far
+    # from the end sits at whatever constant the value head happens to emit — measured at
+    # about -0.35 on a fresh network, which puts 85% of transitions below zero and says
+    # nothing at all about credit assignment. Zero-sum is pinned where it actually holds,
+    # in `test_the_adjudication_is_zero_sum`.
+    assert rollout.stats["games"] > 0
 
 
 def test_both_seats_are_learned_from_in_self_play(net):
