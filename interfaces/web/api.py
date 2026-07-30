@@ -23,6 +23,7 @@ from catan.agents import DIFFICULTY, GreedyAgent, HeuristicAgent, RandomAgent
 from catan.board import GENERIC_HARBOUR
 from catan.dev_cards import DevCard
 from catan.env import CatanEnv
+from catan.events import EventKind
 from catan.events import describe as describe_event
 from catan.resources import NUM_RESOURCES, Resource
 from catan.rulesets import BASE_GAME, RANKED_1V1
@@ -115,6 +116,17 @@ PANEL_TYPES = (
 )
 
 
+def _new_card(before, after):
+    """Which development card was added, as a readable name, or ``None``.
+
+    A purchase adds exactly one, so the first index that grew is the card drawn.
+    """
+    for card in range(len(DevCard)):
+        if after[card] > before[card]:
+            return DEV_CARD_NAMES[card].replace("_", " ")
+    return None
+
+
 class Game:
     """One game in progress, plus the log the player has not seen yet."""
 
@@ -144,10 +156,21 @@ class Game:
     def state(self):
         return self.env.state
 
-    def _record(self, info):
+    def _record(self, info, drew=None):
+        """Turn this step's events into log lines.
+
+        ``drew`` names the development card the *human* just bought, if any. It is worked
+        out here by comparing their hand before and after, rather than recorded on the
+        event: ``info["events"]`` is handed to agents, so a card id on the event would put
+        hidden information somewhere an opponent could read it. The web layer knows whose
+        side it is on; the engine deliberately does not.
+        """
         names = {HUMAN: "You", 3 - HUMAN: "Opponent"}
         for event in info.get("events", ()):
-            self.log.append(describe_event(event, names))
+            line = describe_event(event, names)
+            if drew is not None and event.kind is EventKind.BOUGHT_DEV                     and event.player == HUMAN:
+                line = f"{line}: {drew}"
+            self.log.append(line)
 
     def _let_opponent_play(self):
         """Play the opponent's decisions until it is the human's turn again.
@@ -179,8 +202,9 @@ class Game:
         if index not in self.info["legal"]:
             raise ValueError(f"action {index} is not legal right now")
 
+        before = list(self.state.dev_cards[HUMAN])
         _, _, _, _, self.info = self.env.step(index)
-        self._record(self.info)
+        self._record(self.info, drew=_new_card(before, self.state.dev_cards[HUMAN]))
         self._let_opponent_play()
         return self.view()
 
@@ -374,6 +398,12 @@ def _player(state, info, player):
         }
         entry["dev"] = {
             DEV_CARD_NAMES[c]: state.dev_cards[player][c] for c in range(len(DevCard))
+        }
+        # Bought this turn, so not yet playable. Shown separately rather than folded in,
+        # because "you have a knight" and "you have a knight you cannot use yet" are
+        # different things to know when deciding a move.
+        entry["devNew"] = {
+            DEV_CARD_NAMES[c]: state.dev_cards_new[player][c] for c in range(len(DevCard))
         }
         entry["victoryPoints"] = rules.victory_points(state, player)
         entry["tradeRates"] = {

@@ -39,6 +39,54 @@ function resourceIcon(name, size) {
          ` alt="${name}" title="${name}" width="${size}" height="${size}">`;
 }
 
+/** How a development card reads on screen, and whether it can be played at all. */
+const DEV_CARDS = {
+  knight: { label: "Knight", icon: "⚔" },
+  victory_point: { label: "Victory point", icon: "★", never: true },
+  road_building: { label: "Road building", icon: "─" },
+  year_of_plenty: { label: "Year of plenty", icon: "☘" },
+  monopoly: { label: "Monopoly", icon: "◆" },
+};
+
+/** Your development cards, including the ones you cannot play.
+ *
+ * Worth showing in full: a Victory Point card is never playable but decides the game, and a
+ * card bought this turn is unplayable only until the turn ends. Both are things you want to
+ * see while deciding a move, and neither appears among the action buttons.
+ */
+function devCards(player) {
+  if (!player.dev) {
+    // An opponent's composition is hidden; only the count is public.
+    const backs = Array.from({ length: Math.min(player.devCount, 10) },
+      () => '<span class="dev-back"></span>').join("");
+    return player.devCount
+      ? `<div class="hand dev-hand">${backs}<span class="count">${player.devCount} dev</span></div>`
+      : '<div class="muted">no development cards</div>';
+  }
+
+  const fresh = player.devNew || {};
+  const chips = [];
+  for (const [name, count] of Object.entries(player.dev)) {
+    if (!count) continue;
+    const meta = DEV_CARDS[name] || { label: name, icon: "?" };
+    const pending = fresh[name] || 0;
+    // Bought this turn: held, but not playable until the turn ends.
+    if (count - pending > 0) chips.push(devChip(meta, count - pending, meta.never));
+    if (pending > 0) chips.push(devChip(meta, pending, true, "bought this turn"));
+  }
+  return chips.length
+    ? `<div class="hand dev-hand">${chips.join("")}</div>`
+    : '<div class="muted">no development cards</div>';
+}
+
+function devChip(meta, count, waiting, why) {
+  const note = why || (meta.never ? "counts toward victory, never played" : "");
+  const title = `${meta.label}${count > 1 ? ` x${count}` : ""}${note ? ` — ${note}` : ""}`;
+  return `<span class="dev-chip${waiting ? " dev-waiting" : ""}" title="${title}">` +
+         `<span class="dev-icon">${meta.icon}</span>${meta.label}` +
+         `${count > 1 ? `<b>${count}</b>` : ""}</span>`;
+}
+
 /** A resource count as a picture with a number on it, rather than "wood 3". */
 function resourceChip(name, count, muted) {
   return `<span class="chip${muted ? " chip-empty" : ""}" title="${name}: ${count}">` +
@@ -361,8 +409,8 @@ function drawStatus() {
         <span>${points}</span>
       </div>
       ${cards}
-      <div class="muted">${player.devCount} dev · ${player.knights} knights ·
-        road ${player.longestRoad}</div>
+      ${devCards(player)}
+      <div class="muted">${player.knights} knights · road ${player.longestRoad}</div>
       <div class="muted">left: ${player.settlementsLeft}s ${player.citiesLeft}c
         ${player.roadsLeft}r</div>
       ${badges.length ? `<div class="badges">${badges.join(" · ")}</div>` : ""}
@@ -433,12 +481,21 @@ function drawPanel() {
 function drawLog() {
   const list = document.getElementById("log");
   list.innerHTML = "";
-  for (const line of state.view.log.slice().reverse()) {
+  const lines = state.view.log.slice().reverse();
+  lines.forEach((line, index) => {
     const item = document.createElement("li");
     item.textContent = line;
-    if (line.startsWith("You")) item.className = "mine";
+    const classes = [];
+    if (line.startsWith("You")) classes.push("mine");
+    // A steal or a draw is the outcome a player most wants confirmed, and the easiest to
+    // miss at the end of a long log.
+    if (line.includes(" stole ") || line.includes("development card:")) {
+      classes.push("notable");
+    }
+    if (index === 0) classes.push("latest");
+    item.className = classes.join(" ");
     list.appendChild(item);
-  }
+  });
 }
 
 function setHint(text) {

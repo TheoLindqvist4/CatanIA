@@ -518,3 +518,128 @@ def test_the_client_has_no_stray_control_characters():
               / "interfaces" / "web" / "static" / "app.js").read_text(encoding="utf-8")
     for bad in ("\b", "\f", "\v", "\x00"):
         assert bad not in client, f"control character {bad!r} in app.js"
+
+
+# =========================================================================== #
+# SEEING YOUR OWN CARDS                                                       #
+# =========================================================================== #
+
+def test_you_can_see_every_development_card_you_hold():
+    """Including the ones you cannot play. A Victory Point card never appears as an action
+    button and a card bought this turn is not playable until the turn ends, so without
+    this the only evidence you hold them is a count."""
+    from catan.dev_cards import DevCard
+
+    game = api.Games().new(opponent="hard", seed=5)
+    state = game.state
+    state.dev_cards[api.HUMAN][DevCard.VICTORY_POINT] = 2
+    state.dev_cards[api.HUMAN][DevCard.KNIGHT] = 1
+    state.dev_cards_new[api.HUMAN][DevCard.KNIGHT] = 1
+
+    you = next(p for p in game.view()["players"] if p["you"])
+    assert you["dev"]["victory_point"] == 2
+    assert you["dev"]["knight"] == 1
+    # and which of them arrived this turn, so "held" and "usable" stay distinguishable
+    assert you["devNew"]["knight"] == 1
+    assert you["devNew"]["victory_point"] == 0
+
+
+def test_an_opponents_development_cards_stay_hidden_while_the_game_runs():
+    from catan.dev_cards import DevCard
+
+    game = api.Games().new(opponent="hard", seed=5)
+    game.state.dev_cards[2][DevCard.MONOPOLY] = 3
+
+    view = game.view()
+    assert not view["done"]
+    opponent = next(p for p in view["players"] if not p["you"])
+    assert "dev" not in opponent and "devNew" not in opponent
+    assert opponent["devCount"] == 3, "the count is public; the composition is not"
+    # Not a blob search: your *own* dev dict lists every card name, including the ones you
+    # hold none of, so "monopoly" appears in the payload legitimately. What must not appear
+    # is any per-card figure for the opponent.
+    assert not any(key.startswith("dev") and isinstance(value, dict)
+                   for key, value in opponent.items())
+
+
+def test_buying_a_card_says_which_one_you_drew():
+    """The count going up does not tell you what you bought."""
+    import random
+
+    game = api.Games().new(opponent="hard", seed=6)
+    rng = random.Random(1)
+    for _ in range(600):
+        view = game.view()
+        if view["done"]:
+            break
+        buy = [e["index"] for e in view["actions"]["panel"]
+               if e["type"] == "BUY_DEV_CARD"]
+        if buy:
+            game.play(buy[0])
+            break
+        choices = [i for group in view["actions"]["board"].values() for i in group.values()]
+        choices += [e["index"] for e in view["actions"]["panel"]]
+        if not choices:
+            break
+        game.play(rng.choice(choices))
+
+    named = [line for line in game.log if line.startswith("You bought a development card:")]
+    assert named, game.log[-6:]
+    card = named[-1].split(":")[-1].strip()
+    assert card.replace(" ", "_") in api.DEV_CARD_NAMES, card
+
+
+def test_an_opponents_purchase_is_never_named():
+    """The same log both players read. Naming their card would hand over the game."""
+    import random
+
+    game = api.Games().new(opponent="hard", seed=2)
+    rng = random.Random(4)
+    for _ in range(600):
+        view = game.view()
+        if view["done"]:
+            break
+        choices = [i for group in view["actions"]["board"].values() for i in group.values()]
+        choices += [e["index"] for e in view["actions"]["panel"]]
+        if not choices:
+            break
+        game.play(rng.choice(choices))
+
+    theirs = [line for line in game.log if line.startswith("Opponent bought")]
+    assert theirs, "the opponent never bought one; pick another seed"
+    for line in theirs:
+        assert line == "Opponent bought a development card", line
+
+
+def test_the_card_a_steal_took_is_named():
+    """In a two-player game both sides see the card move, so naming it is not a leak — and
+    a robber that silently changed a count would look broken."""
+    import random
+
+    game = api.Games().new(opponent="hard", seed=6)
+    rng = random.Random(1)
+    for _ in range(600):
+        view = game.view()
+        if view["done"]:
+            break
+        choices = [i for group in view["actions"]["board"].values() for i in group.values()]
+        choices += [e["index"] for e in view["actions"]["panel"]]
+        if not choices:
+            break
+        game.play(rng.choice(choices))
+
+    steals = [line for line in game.log if " stole " in line]
+    assert steals, "no steal happened; pick another seed"
+    for line in steals[:5]:
+        assert any(name in line for name in api.RESOURCE_NAMES), line
+
+
+def test_the_drawn_card_is_not_recorded_on_the_event():
+    """`info["events"]` is handed to agents, so a card id there would put hidden
+    information where an opponent could read it. The web layer works it out instead."""
+    from catan.events import EventKind
+
+    game = api.Games().new(opponent="hard", seed=6)
+    for event in game.info.get("events", ()):
+        if event.kind is EventKind.BOUGHT_DEV:
+            assert event.position == 0 and event.other == 0, event

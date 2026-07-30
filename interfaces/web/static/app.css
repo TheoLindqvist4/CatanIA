@@ -182,3 +182,63 @@ button .res-icon {
 #supply .hand {
   margin-top: 0;
 }
+
+/* ------------------------------------------------------- development cards */
+/* Shown in full, including the ones that cannot be played: a Victory Point card decides
+   the game and never appears as a button, and a card bought this turn is unplayable only
+   until the turn ends. Both matter while deciding a move. */
+
+.dev-hand {
+  gap: 3px;
+}
+
+.dev-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  border-radius: 4px;
+  color: #eaf2fa;
+  background: #2b3f56;
+  border: 1px solid #3d566f;
+}
+
+.dev-chip .dev-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.dev-chip b {
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* Not playable yet — bought this turn, or a victory point card that is never played. */
+.dev-waiting {
+  opacity: 0.62;
+  border-style: dashed;
+}
+
+.dev-hand .dev-back {
+  width: 15px;
+  height: 21px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(-45deg, #33506e, #33506e 3px, #2a4159 3px, #2a4159 6px);
+  border: 1px solid #1e3145;
+}
+
+/* Lines reporting something changing hands — a steal, or which card you drew. Easy to miss
+   at the end of a long log, and exactly what a player wants confirmed. */
+#log li.notable {
+  font-weight: 600;
+  color: #ffe9a8;
+}
+
+#log li.latest {
+  background: rgba(255, 233, 168, 0.09);
+  border-radius: 3px;
+  padding-left: 3px;
+}
