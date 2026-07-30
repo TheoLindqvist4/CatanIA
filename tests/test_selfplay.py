@@ -13,7 +13,7 @@ pytestmark = pytest.mark.slow
 
 import catan.topology as T
 from catan import rules
-from catan.resources import NUM_RESOURCES
+from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES
 from catan.state import (
     MAX_CITIES,
     MAX_ROADS,
@@ -75,12 +75,19 @@ def assert_invariants(state):
         assert 0 <= state.cities_left[player] <= MAX_CITIES
         assert 0 <= state.roads_left[player] <= MAX_ROADS
 
-    # --- hands are well formed ---
+    # --- hands and the bank are well formed, and cards are conserved ---
     for player in state.players:
         hand = state.hands[player]
         assert len(hand) == NUM_RESOURCES
         assert all(isinstance(n, int) and n >= 0 for n in hand), \
             f"player {player} has a negative or non-integer hand: {hand}"
+
+    assert len(state.bank) == NUM_RESOURCES
+    assert all(n >= 0 for n in state.bank), f"the bank went negative: {state.bank}"
+    for resource in range(NUM_RESOURCES):
+        held = sum(state.hands[p][resource] for p in state.players)
+        assert held + state.bank[resource] == BANK_PER_RESOURCE, \
+            f"resource {resource}: {held} held + {state.bank[resource]} in bank"
 
     # --- every road connects to its owner's network ---
     for road in range(1, T.NUM_ROADS + 1):
@@ -163,25 +170,41 @@ def test_some_games_are_actually_won():
     assert any(w is not None for w in winners), "no game ever reached 10 points"
 
 
-def test_games_that_stall_do_so_for_a_legitimate_reason():
-    """Without trade, ports or dev cards, a player whose settlements miss a resource
-    can be permanently unable to build. That is a real consequence of Phase 1's scope,
-    not a stuck engine — so a stalled game must still offer END_TURN forever.
+def test_almost_every_game_now_finishes():
+    """Bank trading is what made this true.
 
-    Phase 2's trading and harbours are what fix this.
+    Before it, only 4 of 40 random games reached 10 points: a settlement needs four
+    different resources, most players' buildings reach only three, and there was no way
+    to convert a surplus. With 4:1 (and harbour) trading, nearly all games finish.
+
+    A stalled game is still not a deadlock — END_TURN stays legal — so that is checked
+    too rather than assumed.
     """
-    stalled = 0
+    finished = 0
     for seed in range(20):
-        state = play_random_game(seed=seed, max_actions=4000)
+        state = play_random_game(seed=seed, max_actions=6000)
         if state.winner is not None:
+            finished += 1
             continue
-        stalled += 1
-        # the game is not deadlocked: play is still legal
         if state.phase is Phase.ROLL:
             rules.roll_dice(state)
         assert rules.end_turn() in rules.legal_actions(state)
 
-    assert stalled > 0, "expected some games to stall in Phase 1"
+    assert finished >= 16, f"only {finished}/20 games finished; trading may have regressed"
+
+
+def test_cards_are_conserved():
+    """Every card is either in the bank or in a hand. 19 x 5 = 95, always.
+
+    Catches a payment that forgets to refund the bank, or a payout that mints cards.
+    """
+    for seed in range(12):
+        for num_players in (2, 4):
+            state = play_random_game(seed=seed, num_players=num_players,
+                                     max_actions=2500)
+            in_hands = sum(sum(state.hands[p]) for p in state.players)
+            assert in_hands + sum(state.bank) == 5 * BANK_PER_RESOURCE
+            assert all(n >= 0 for n in state.bank), "the bank went negative"
 
 
 def test_the_documented_driver_loop_terminates():

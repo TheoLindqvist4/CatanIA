@@ -25,7 +25,7 @@ import random
 from enum import IntEnum
 
 from catan.board import Board
-from catan.resources import empty_hand
+from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, empty_hand
 from catan.topology import NUM_ROADS, NUM_VERTICES
 
 #: Sentinel for an unowned vertex or road.
@@ -106,6 +106,10 @@ class GameState:
         self.settlements_left = [0] + [MAX_SETTLEMENTS] * num_players
         self.cities_left = [0] + [MAX_CITIES] * num_players
         self.roads_left = [0] + [MAX_ROADS] * num_players
+
+        #: The bank's supply, indexed by Resource. Cards are conserved: every card is
+        #: either here or in a hand, which ``test_cards_are_conserved`` checks.
+        self.bank = [BANK_PER_RESOURCE] * NUM_RESOURCES
 
         self.phase = Phase.SETUP_SETTLEMENT
         self.setup_step = 0
@@ -214,6 +218,7 @@ class GameState:
         other.settlements_left = list(self.settlements_left)
         other.cities_left = list(self.cities_left)
         other.roads_left = list(self.roads_left)
+        other.bank = list(self.bank)
 
         other.phase = self.phase
         other.setup_step = self.setup_step
@@ -230,7 +235,7 @@ class GameState:
 
     _COMPARED = (
         "num_players", "player_order", "vertex_owner", "vertex_piece", "edge_owner",
-        "hands", "settlements_left", "cities_left", "roads_left", "phase",
+        "hands", "bank", "settlements_left", "cities_left", "roads_left", "phase",
         "setup_step", "last_settlement", "turn_number", "last_roll", "winner",
     )
 

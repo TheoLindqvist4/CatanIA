@@ -154,4 +154,6 @@ def snapshot_board(board):
         dict(board.vertex_production),
         board.desert_tile,
         {roll: dict(board.producers_for(roll)) for roll in range(2, 13)},
+        dict(board.harbours),
+        {v: board.harbours_at(v) for v in range(1, 55)},
     )

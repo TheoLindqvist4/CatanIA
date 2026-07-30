@@ -17,13 +17,32 @@ import random
 from typing import NamedTuple
 
 from catan.resources import DESERT, Resource
-from catan.topology import NUM_TILES, NUM_VERTICES, ROW_LENGTHS, TILE_ADJACENCY, VERTEX_TILES, check_id
+from catan.topology import (
+    COASTAL_CYCLE,
+    NUM_TILES,
+    NUM_VERTICES,
+    ROAD_VERTICES,
+    ROW_LENGTHS,
+    TILE_ADJACENCY,
+    VERTEX_TILES,
+    check_id,
+)
 
 #: The roll that produces nothing and moves the robber.
 ROBBER_ROLL = 7
 
 #: Rolls a pair of dice can produce.
 ROLLS = range(2, 13)
+
+#: A generic 3:1 harbour, as opposed to a resource-specific 2:1 one.
+GENERIC_HARBOUR = None
+
+#: The nine harbours: four generic 3:1, plus one 2:1 for each resource.
+HARBOUR_TYPES = (GENERIC_HARBOUR,) * 4 + tuple(Resource)
+
+#: Gaps between consecutive harbours walking :data:`COASTAL_CYCLE`. 3+3+4 repeated three
+#: times is exactly 30, so nine harbours land evenly and no vertex serves two of them.
+HARBOUR_SPACING = (3, 3, 4) * 3
 
 
 class Production(NamedTuple):
@@ -75,6 +94,11 @@ class Board:
         self.vertex_production = self._index_vertices()
         #: roll -> ``{vertex: productions}``, desert already excluded.
         self._producers_by_roll = self._index_rolls()
+
+        #: coastal road -> harbour type (``GENERIC_HARBOUR`` or a ``Resource``).
+        self.harbours = self._place_harbours(rng)
+        #: vertex -> the harbour types usable from it.
+        self._harbours_by_vertex = self._index_harbours()
 
         self.desert_tile = self.tile_resources.index(DESERT, 1)
 
@@ -172,9 +196,43 @@ class Board:
             for roll, bucket in buckets.items()
         }
 
+    def _place_harbours(self, rng):
+        """Put the nine harbours on coastal roads, evenly spaced, types shuffled.
+
+        Positions come from walking :data:`COASTAL_CYCLE` with
+        :data:`HARBOUR_SPACING`; only which harbour lands where is random. See
+        ``docs/decisions/0010-harbour-placement.md`` — real Catan prints harbours on a
+        fixed sea frame, and this is an even-spacing approximation of it.
+        """
+        slots, index = [], 0
+        for gap in HARBOUR_SPACING:
+            slots.append(COASTAL_CYCLE[index])
+            index += gap
+
+        types = list(HARBOUR_TYPES)
+        rng.shuffle(types)
+        return dict(zip(slots, types))
+
+    def _index_harbours(self):
+        """Both endpoints of a harbour road can use it."""
+        by_vertex = {}
+        for road, harbour in self.harbours.items():
+            for vertex in ROAD_VERTICES[road]:
+                by_vertex.setdefault(vertex, set()).add(harbour)
+        return {vertex: frozenset(kinds) for vertex, kinds in by_vertex.items()}
+
     # ------------------------------------------------------------------ #
     # ACCESS                                                              #
     # ------------------------------------------------------------------ #
+
+    def harbours_at(self, vertex):
+        """The harbour types a building on ``vertex`` would grant. Usually empty."""
+        return self._harbours_by_vertex.get(vertex, frozenset())
+
+    @property
+    def harbour_vertices(self):
+        """Every vertex that grants a harbour."""
+        return tuple(sorted(self._harbours_by_vertex))
 
     def number_at(self, tile):
         return self.tile_numbers[check_id(tile, NUM_TILES, "tile")]
@@ -238,7 +296,11 @@ class Board:
     @property
     def layout(self):
         """The whole board as one hashable value: what a seed determines."""
-        return (tuple(self.tile_numbers), tuple(self.tile_resources))
+        return (
+            tuple(self.tile_numbers),
+            tuple(self.tile_resources),
+            tuple(sorted(self.harbours.items(), key=lambda item: item[0])),
+        )
 
     def __eq__(self, other):
         """Two boards are equal when they have the same layout.

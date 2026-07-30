@@ -355,7 +355,9 @@ def test_a_road_must_connect_to_the_players_network():
     in_build_phase(state, 1)
     enough_for_everything(state, 1)
 
-    assert rules.legal_actions(state) == [end_turn()], "nothing to connect to yet"
+    offered = rules.legal_actions(state)
+    assert not [a for a in offered if a.type is ActionType.BUILD_ROAD], \
+        "no road can be built with nothing to connect to"
     with pytest.raises(IllegalAction):
         rules.apply(state, build_road(70))
 
@@ -628,6 +630,36 @@ def test_an_unknown_action_type_raises():
     in_build_phase(state, 1)
     with pytest.raises(IllegalAction):
         rules.apply(state, Action(99, 1))
+
+
+@pytest.mark.parametrize("action", [
+    Action(99, 1),
+    Action(-1, 0),
+    Action(ActionType.TRADE_WITH_BANK, -1, 0),
+    Action(ActionType.TRADE_WITH_BANK, 0, 99),
+    Action(ActionType.BUILD_ROAD, 999),
+])
+def test_the_repr_of_a_malformed_action_never_raises(action):
+    """This has bitten twice: once on a bad action type, once on a bad resource index.
+
+    The repr appears inside the IllegalAction message raised *because* the action is
+    malformed, so an exception here replaces a clear error with a confusing one.
+    """
+    text = repr(action)
+    assert isinstance(text, str) and text
+
+
+@pytest.mark.parametrize("action", [
+    Action(99, 1),
+    Action(ActionType.TRADE_WITH_BANK, -1, 0),
+    Action(ActionType.TRADE_WITH_BANK, 0, 99),
+])
+def test_a_malformed_action_reports_illegal_not_a_crash(action):
+    state = fresh(seed=1)
+    in_build_phase(state, 1)
+    enough_for_everything(state, 1, times=20)
+    with pytest.raises(IllegalAction):
+        rules.apply(state, action)
 
 
 # --------------------------------------------------------------------------- #

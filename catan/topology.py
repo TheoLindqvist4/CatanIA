@@ -293,6 +293,46 @@ CORNER_VERTICES = tuple(
 )
 
 
+def _coastal_cycle():
+    """The coastal roads in walk order around the coastline.
+
+    Every perimeter vertex has exactly two coastal roads, so the coastline is a single
+    closed loop and an ordered walk exists. Harbours are spaced along this order.
+
+    Canonical: starts at the lowest-numbered coastal road and leaves by whichever of its
+    endpoints leads to the lower-numbered neighbour, so the sequence is the same on every
+    run.
+    """
+    roads_at = {}
+    for road in COASTAL_ROADS:
+        for vertex in ROAD_VERTICES[road]:
+            roads_at.setdefault(vertex, []).append(road)
+
+    def step(vertex, road):
+        """The other coastal road meeting ``vertex``."""
+        first, second = roads_at[vertex]
+        return second if first == road else first
+
+    start = min(COASTAL_ROADS)
+    u, v = ROAD_VERTICES[start]
+    vertex = min((u, v), key=lambda end: step(end, start))
+
+    cycle, road = [start], start
+    while True:
+        following = step(vertex, road)
+        if following == start:
+            break
+        cycle.append(following)
+        a, b = ROAD_VERTICES[following]
+        vertex = b if a == vertex else a
+        road = following
+    return tuple(cycle)
+
+
+#: The coastal roads in walk order around the coastline, canonically oriented.
+COASTAL_CYCLE = _coastal_cycle()
+
+
 # --------------------------------------------------------------------------- #
 # The ragged-row view, for humans and for display                             #
 # --------------------------------------------------------------------------- #
@@ -409,6 +449,14 @@ def _validate():
     # the coastline is a single closed loop, so it has as many vertices as edges
     assert len(PERIMETER_VERTICES) == len(COASTAL_ROADS)
     assert set(CORNER_VERTICES) <= set(PERIMETER_VERTICES)
+
+    # the walk visits every coastal road exactly once and closes up
+    assert len(COASTAL_CYCLE) == len(COASTAL_ROADS)
+    assert set(COASTAL_CYCLE) == set(COASTAL_ROADS)
+    assert all(
+        set(ROAD_VERTICES[a]) & set(ROAD_VERTICES[b])
+        for a, b in zip(COASTAL_CYCLE, COASTAL_CYCLE[1:] + COASTAL_CYCLE[:1])
+    )
 
     # the ragged-row view must agree with the lattice
     assert sum(len(row) for row in VERTEX_ROWS) == NUM_VERTICES

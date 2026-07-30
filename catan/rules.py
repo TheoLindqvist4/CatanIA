@@ -21,9 +21,25 @@ No I/O, and no use of the global ``random`` module.
 """
 
 from catan import resources
-from catan.actions import Action, ActionType, build_city, build_road, build_settlement, end_turn
-from catan.board import ROBBER_ROLL
-from catan.resources import CITY_COST, ROAD_COST, SETTLEMENT_COST
+from catan.actions import (
+    Action,
+    ActionType,
+    build_city,
+    build_road,
+    build_settlement,
+    end_turn,
+    trade_with_bank,
+)
+from catan.board import GENERIC_HARBOUR, ROBBER_ROLL
+from catan.resources import (
+    BANK_RATE,
+    CITY_COST,
+    GENERIC_HARBOUR_RATE,
+    NUM_RESOURCES,
+    ROAD_COST,
+    SETTLEMENT_COST,
+    SPECIFIC_HARBOUR_RATE,
+)
 from catan.state import (
     NO_OWNER,
     PIECE_VICTORY_POINTS,
@@ -135,6 +151,39 @@ def can_build_city(state, player, vertex):
 
 
 # --------------------------------------------------------------------------- #
+# TRADING WITH THE BANK                                                       #
+# --------------------------------------------------------------------------- #
+
+def trade_rates(state, player):
+    """How many of each resource ``player`` must give the bank for one card back.
+
+    4 by default, 3 with any generic harbour, 2 with the matching specific harbour. A
+    harbour is granted by owning a building on either endpoint of its coastal road.
+    """
+    rates = [BANK_RATE] * NUM_RESOURCES
+    for vertex in state.buildings_of(player):
+        for harbour in state.board.harbours_at(vertex):
+            if harbour is GENERIC_HARBOUR:
+                for resource in range(NUM_RESOURCES):
+                    rates[resource] = min(rates[resource], GENERIC_HARBOUR_RATE)
+            else:
+                rates[harbour] = min(rates[harbour], SPECIFIC_HARBOUR_RATE)
+    return rates
+
+
+def can_trade_with_bank(state, player, give, take, rates=None):
+    """Whether ``player`` may exchange ``give`` for one ``take`` at their best rate."""
+    if give == take:
+        return False
+    if not (0 <= give < NUM_RESOURCES and 0 <= take < NUM_RESOURCES):
+        return False
+    if state.bank[take] < 1:
+        return False
+    rate = (rates or trade_rates(state, player))[give]
+    return state.hands[player][give] >= rate
+
+
+# --------------------------------------------------------------------------- #
 # LEGAL ACTIONS                                                               #
 # --------------------------------------------------------------------------- #
 
@@ -176,6 +225,13 @@ def legal_actions(state):
             build_city(v)
             for v in range(1, NUM_VERTICES + 1)
             if can_build_city(state, player, v)
+        ]
+        rates = trade_rates(state, player)  # computed once for all 20 candidates
+        actions += [
+            trade_with_bank(give, take)
+            for give in range(NUM_RESOURCES)
+            for take in range(NUM_RESOURCES)
+            if can_trade_with_bank(state, player, give, take, rates)
         ]
         return actions
 
@@ -225,10 +281,13 @@ def _apply_setup_settlement(state, player, action):
     _put_building(state, player, vertex, Piece.SETTLEMENT)
     state.last_settlement = vertex
 
-    # The second settlement pays out its adjacent tiles immediately.
+    # The second settlement pays out its adjacent tiles immediately. Drawn from the
+    # bank like any other production — at most 3 cards from a full bank, so the
+    # shortage rule cannot bite here.
     if state.setup_round == 2:
         for resource in state.board.resources_at(vertex):
             state.hands[player][resource] += 1
+            state.bank[resource] -= 1
 
     state.phase = Phase.SETUP_ROAD
 
@@ -261,25 +320,37 @@ def _apply_build(state, player, action):
         state.phase = Phase.ROLL
         return
 
+    if action.type is ActionType.TRADE_WITH_BANK:
+        give, take = action.position, action.extra
+        if not can_trade_with_bank(state, player, give, take):
+            raise IllegalAction(f"cannot {action!r}")
+        rate = trade_rates(state, player)[give]
+        hand = state.hands[player]
+        hand[give] -= rate
+        state.bank[give] += rate
+        state.bank[take] -= 1
+        hand[take] += 1
+        return  # a trade cannot win the game
+
     if action.type is ActionType.BUILD_ROAD:
         road = _check_road(action.position)
         if not can_build_road(state, player, road):
             raise IllegalAction(f"cannot build a road at {road}")
-        resources.pay(state.hands[player], ROAD_COST)
+        _pay(state, player, ROAD_COST)
         _put_road(state, player, road)
 
     elif action.type is ActionType.BUILD_SETTLEMENT:
         vertex = _check_vertex(action.position)
         if not can_build_settlement(state, player, vertex):
             raise IllegalAction(f"cannot build a settlement at {vertex}")
-        resources.pay(state.hands[player], SETTLEMENT_COST)
+        _pay(state, player, SETTLEMENT_COST)
         _put_building(state, player, vertex, Piece.SETTLEMENT)
 
     elif action.type is ActionType.BUILD_CITY:
         vertex = _check_vertex(action.position)
         if not can_build_city(state, player, vertex):
             raise IllegalAction(f"cannot build a city at {vertex}")
-        resources.pay(state.hands[player], CITY_COST)
+        _pay(state, player, CITY_COST)
         state.vertex_piece[vertex] = Piece.CITY
         state.cities_left[player] -= 1
         state.settlements_left[player] += 1  # the settlement returns to the supply
@@ -288,6 +359,17 @@ def _apply_build(state, player, action):
         raise IllegalAction(f"unknown action {action!r}")
 
     _check_for_winner(state, player)
+
+
+def _pay(state, player, cost):
+    """Spend ``cost``, returning the cards to the bank.
+
+    Cards are conserved: every card is either in the bank or in a hand. Without the
+    refund the bank would drain and production would stop.
+    """
+    resources.pay(state.hands[player], cost)
+    for resource, amount in enumerate(cost):
+        state.bank[resource] += amount
 
 
 def _put_building(state, player, vertex, piece):
@@ -343,15 +425,49 @@ def roll_dice(state):
 
 
 def distribute(state, roll):
-    """Pay every player for their buildings on ``roll``. Cities yield double."""
+    """Pay every player for their buildings on ``roll``. Cities yield double.
+
+    Bounded by the bank. The official shortage rule: if the bank cannot cover everything
+    owed of a resource, **nobody** receives any of it — unless exactly one player is owed
+    it, in which case they take whatever is left. So the payout has to be tallied per
+    resource before any card moves.
+
+    Returns:
+        dict: ``{player: [received per resource]}``, for logging and tests.
+    """
+    owed = {player: [0] * NUM_RESOURCES for player in state.players}
+
     for vertex, productions in state.board.producers_for(roll).items():
         owner = state.vertex_owner[vertex]
         if owner == NO_OWNER:
             continue
         amount = PIECE_YIELD[state.vertex_piece[vertex]]
-        hand = state.hands[owner]
         for production in productions:
-            hand[production.resource] += amount
+            owed[owner][production.resource] += amount
+
+    paid = {player: [0] * NUM_RESOURCES for player in state.players}
+
+    for resource in range(NUM_RESOURCES):
+        claimants = [p for p in state.players if owed[p][resource] > 0]
+        if not claimants:
+            continue
+
+        demand = sum(owed[p][resource] for p in claimants)
+        available = state.bank[resource]
+
+        if demand <= available:
+            grants = [(p, owed[p][resource]) for p in claimants]
+        elif len(claimants) == 1:
+            grants = [(claimants[0], available)]
+        else:
+            continue  # short, and more than one claimant: nobody gets any
+
+        for player, amount in grants:
+            state.hands[player][resource] += amount
+            state.bank[resource] -= amount
+            paid[player][resource] = amount
+
+    return paid
 
 
 # --------------------------------------------------------------------------- #

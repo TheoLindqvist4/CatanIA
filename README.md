@@ -8,8 +8,9 @@ sous une forme lisible par une machine, afin d'**entraîner une IA** à jouer. L
 un *consommateur* du moteur, jamais une partie de celui-ci.
 
 > 🚧 **Projet en cours.** Le moteur (`catan/`) gère une partie complète de bout en bout : mise en
-> place, économie, construction, villes, points de victoire et victoire à 10. Il manque encore le
-> voleur, les cartes de développement, les ports et l'échange.
+> place, économie, construction, villes, banque, échange avec les ports, points de victoire et
+> victoire à 10. Il manque encore le voleur, les cartes de développement et l'échange entre
+> joueurs.
 >
 > - **[ROADMAP.md](ROADMAP.md)** — les phases, ce qui est fait et ce qui reste.
 > - **[docs/engine.md](docs/engine.md)** — comment le moteur s'articule et comment piloter une
@@ -19,7 +20,7 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 ## ⭐ État actuel
 
-**Fonctionne** (276 tests) :
+**Fonctionne** (320 tests) :
 
 - 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
   toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
@@ -32,6 +33,9 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 - 🏠 **Construction** : routes, colonies et **villes**, avec le coût réellement débité, la règle de
   distance, la connectivité, et le blocage par une construction adverse.
 - 🎲 **Production** selon les dés, doublée pour les villes.
+- 🏦 **La banque** : 19 cartes par ressource, conservation des cartes (toujours 95 au total) et la
+  règle officielle de pénurie.
+- 🔄 **Échange avec la banque** à 4:1, et **les ports** à 3:1 et 2:1.
 - 🏆 **Points de victoire et victoire à 10.**
 - 🛤️ **Plus longue route** : chemin simple strict, interrompu par une construction adverse.
 - 👥 **2 à 4 joueurs.**
@@ -39,24 +43,25 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 **Pas encore implémenté :** le voleur et la gestion du 7, la défausse au-delà de 7 cartes, les
 cartes de développement, l'armée la plus puissante, l'attribution des 2 points de la plus longue
-route, les ports et l'échange, les limites de la banque, ainsi que l'espace d'actions et
-d'observations destiné à l'IA. Détails dans [ROADMAP.md](ROADMAP.md).
+route, l'échange entre joueurs, ainsi que l'espace d'actions et d'observations destiné à l'IA.
+Détails dans [ROADMAP.md](ROADMAP.md).
 
-> ⚠️ **Sans échange, la plupart des parties se bloquent** : seules **4 parties sur 40** atteignent
-> 10 points. Une colonie coûte quatre ressources différentes, or les colonies d'un joueur n'en
-> atteignent souvent que trois — les joueurs finissent avec plus de 100 cartes inutilisables. Le
-> moteur n'est pas coincé pour autant (passer son tour reste toujours légal), mais cela signifie que
-> **l'environnement n'est pas encore entraînable** : la récompense est presque toujours nulle.
-> L'échange est donc la priorité de la phase 2, avant le voleur et les cartes de développement.
-> Détails : [docs/engine.md](docs/engine.md#-phase-1-games-usually-stall-and-trading-is-why).
+> 📈 **L'échange a rendu les parties jouables.** Avant lui, seules **4 parties sur 40** atteignaient
+> 10 points : une colonie coûte quatre ressources différentes, or les colonies d'un joueur n'en
+> atteignent souvent que trois, et sans conversion possible les joueurs restaient bloqués avec plus
+> de 100 cartes inutilisables. Avec l'échange : **39 parties sur 40** se terminent.
+> Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
 
 ## Plateau du jeu Catan
+
 ![Plateau de jeu](Images/Catan_board.png)
 
 ## Positions des routes
+
 ![Positions des routes](Images/Catan_road_positions.png)
 
 ## Positions des colonies
+
 ![Positions des colonies](Images/Catan_settlement_positions.png)
 
 ## 🛠️ Technologies utilisées
@@ -83,9 +88,8 @@ d'observations destiné à l'IA. Détails dans [ROADMAP.md](ROADMAP.md).
    state = GameState(num_players=3, seed=42)
    agent = random.Random(0)
 
-   # La limite de tours est nécessaire : sans échange ni ports, une partie peut
-   # légitimement ne jamais atteindre 10 points (voir plus haut).
-   while state.phase is not Phase.GAME_OVER and state.turn_number < 500:
+   # La limite de tours reste prudente : une partie peut encore ne pas se terminer.
+   while state.phase is not Phase.GAME_OVER and state.turn_number < 2000:
        if state.phase is Phase.ROLL:
            rules.roll_dice(state)
            continue
@@ -96,6 +100,7 @@ d'observations destiné à l'IA. Détails dans [ROADMAP.md](ROADMAP.md).
 
    print(state.winner, rules.scores(state))
    ```
+
    Voir [docs/engine.md](docs/engine.md). L'ancienne démo en terminal
    (`python Game_2_players.py`) fonctionne encore, mais elle est dépréciée.
 
@@ -108,7 +113,7 @@ CatanIA/
 │   │-- 🌾 resources.py       #   Les cinq ressources et les coûts
 │   │-- 🗺️ board.py           #   Une disposition de plateau — IMMUABLE
 │   │-- 🧭 state.py           #   GameState : tout ce qui change pendant la partie
-│   │-- 🎯 actions.py         #   Action = (type, position)
+│   │-- 🎯 actions.py         #   Action = (type, position, extra)
 │   │-- ⚖️ rules.py           #   legal_actions / apply — l'unique autorité de légalité
 │-- 🧪 tests/                 # Suite de tests (pytest)
 │-- 📚 docs/                  # Audit, géométrie, moteur, décisions clés
@@ -154,7 +159,7 @@ python -m pytest tests -q
 
 Pour plus de détails sur la génération visuelle du plateau avec une application Full Stack utilisant une API, vous pouvez consulter le dépôt suivant :
 
-[Full Stack Catan - Génération du plateau visuellement avec l'application Full Stack API](https://github.com/TheoLindqvist4/FullStackCatan)
+[Full Stack Catan - Génération du plateau visuellement avec l&#39;application Full Stack API](https://github.com/TheoLindqvist4/FullStackCatan)
 
 ## ✨ Auteurs
 

@@ -31,6 +31,7 @@ the reasoning at the time is the point.
 | [0007](decisions/0007-package-layout-rewrite-vs-incremental.md) | Build `catan/` fresh | accepted |
 | [0008](decisions/0008-mutating-apply-plus-clone.md) | `apply` mutates; copy with `clone()` | accepted |
 | [0009](decisions/0009-immutable-board-mutable-state.md) | The board is immutable; mutable state lives in `GameState` | accepted |
+| [0010](decisions/0010-harbour-placement.md) | Harbour positions are fixed and evenly spaced; only the types shuffle | accepted, **not faithful** — revisit |
 
 ## Worth knowing
 
@@ -49,12 +50,18 @@ Consequences that are easy to trip over:
 - **Harbours attach to `PERIMETER_VERTICES`, not `CORNER_VERTICES`**
   ([board-geometry.md](board-geometry.md#6-coastline)). 30 versus 18 — the 12 notch
   vertices are on the coast too.
-- **Phase 1 games usually stall — only 4 of 40 random games reach 10 points**
-  ([engine.md](engine.md#-phase-1-games-usually-stall-and-trading-is-why)). A settlement
-  needs four different resources and most players' buildings reach only three, so they end
-  up holding 100+ useless cards. The engine is not deadlocked, but a win-based reward is
-  almost always zero, so **this is not yet a trainable environment.** Phase 2's trading is
-  the unblocking item.
+- **Trading is what made games finishable — 4 of 40 games reached 10 points before it,
+  39 of 40 after** ([engine.md](engine.md#trading-is-what-made-games-finishable)). A
+  settlement needs four different resources and most players' buildings reach only three, so
+  without a way to convert a surplus they stopped permanently, one of them holding 113 cards.
+- **Harbour positions are not the official ones**
+  ([0010](decisions/0010-harbour-placement.md)). The trading *rules* are standard; only the
+  geography is an even-spacing approximation, so learned preferences for particular
+  settlement spots will not transfer exactly to a real board.
+- **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
+  raised *because* an action is malformed. It crashed there twice — once on a bad action
+  type, once on a bad resource index — replacing a clear error with a confusing one.
+  `test_the_repr_of_a_malformed_action_never_raises` pins it.
 
 ## Deviations from official Catan
 

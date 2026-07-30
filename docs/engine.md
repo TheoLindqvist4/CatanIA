@@ -16,12 +16,23 @@ global `random` module.
 | `catan.resources` | the five resources, and what things cost | no |
 | `catan.board` | one layout: numbers, resources, production index | **no** — immutable after construction |
 | `catan.state` | `GameState`: ownership, hands, supplies, phase, turn | yes — this is the only mutable thing |
-| `catan.actions` | `Action = (type, position)` | — |
+| `catan.actions` | `Action = (type, position, extra)` | — |
 | `catan.rules` | `legal_actions`, `apply`, `roll_dice`, scoring, longest road | pure functions |
 
 The board/state split is [decision 0009](decisions/0009-immutable-board-mutable-state.md):
 because the board never changes, `clone()` shares it by reference and copies only the arrays
 that move.
+
+An `Action` is a `(type, position, extra)` triple. Two plain ints rather than a variable
+payload, because Phase 3 has to flatten every action into one discrete index and a fixed
+arity makes that a lookup rather than a parse:
+
+| type | `position` | `extra` |
+|---|---|---|
+| `END_TURN` | — | — |
+| `BUILD_ROAD` | road id | — |
+| `BUILD_SETTLEMENT` / `BUILD_CITY` | vertex id | — |
+| `TRADE_WITH_BANK` | resource given | resource received |
 
 ---
 
@@ -80,7 +91,7 @@ from catan import rules
 
 state = GameState(num_players=3, seed=42)
 
-# Bound the loop. A Phase 1 game can legitimately never reach 10 points — see below.
+# Bound the loop: a game can still fail to reach 10 points, just far less often now.
 while state.phase is not Phase.GAME_OVER and state.turn_number < 500:
     if state.phase is Phase.ROLL:
         rules.roll_dice(state)          # environment stochasticity, not a move
@@ -118,43 +129,66 @@ offered by one and rejected by the other**. `apply` raises `IllegalAction` for a
 
 ✅ Setup with the snake order and the second-settlement payout · the distance rule ·
 road connectivity, including *not* building through an opponent's building · resource costs
-actually charged · production, with cities yielding double · city upgrades returning the
-settlement to the supply · piece limits · victory points and the win at 10 · longest-road
-measurement · 2–4 players · full determinism from a seed.
+actually charged · production, with cities yielding double and the bank's shortage rule ·
+city upgrades returning the settlement to the supply · piece limits · victory points and the
+win at 10 · longest-road measurement · **the bank, with cards conserved** · **4:1 bank
+trading** · **harbours at 3:1 and 2:1** · 2–4 players · full determinism from a seed.
 
 ❌ **Not yet** (Phase 2): the robber and 7-handling · discarding above 7 cards · development
 cards · Largest Army · the Longest Road *award* (the measurement exists; the 2 points do
-not) · harbours · trading of any kind · bank limits.
+not) · player-to-player trading.
 
-### ⚠️ Phase 1 games usually stall, and trading is why
+### Trading is what made games finishable
 
-Measured over 40 random 2-player games (4,000 actions each): **only 4 reached 10 points.**
-
-The cause is resource coverage. A player's two starting settlements touch at most six
-tiles, and across 80 sampled players the number of *distinct* resources reachable from
+Before bank trading existed, only **4 of 40** random games reached 10 points. The cause was
+resource coverage: a settlement costs wood + brick + sheep + wheat — four *different*
+resources — while across 80 sampled players the number of distinct resources reachable from
 their buildings was:
 
 | distinct resources | 1 | 2 | 3 | 4 | 5 |
 |---|---|---|---|---|---|
 | players | 4 | 14 | **45** | 13 | 4 |
 
-A settlement costs wood + brick + sheep + wheat — four different resources. Most players can
-never assemble that, and with no way to convert a surplus they stop permanently. One
-observed end state:
+Most players could never assemble four, and with no way to convert a surplus they stopped
+permanently. One observed end state had player 1 holding **113 cards** and unable to build
+anything:
 
 ```
-player 1: 0 wood, 32 brick, 52 sheep, 29 wheat,  0 ore   -> cannot build anything
-player 2: 36 wood, 0 brick, 58 sheep,  0 wheat,  0 ore   -> cannot build anything
-player 3: 42 wood, 2 brick,  0 sheep,  0 wheat, 33 ore   -> out of road pieces
+player 1:  0 wood, 32 brick, 52 sheep, 29 wheat,  0 ore
+player 2: 36 wood,  0 brick, 58 sheep,  0 wheat,  0 ore
+player 3: 42 wood,  2 brick,  0 sheep,  0 wheat, 33 ore   (out of road pieces)
 ```
 
-Player 1 holds 113 cards and is completely stuck.
+With 4:1 bank trading and harbours: **39 of 40** games now finish, in a median of 286 turns.
 
-The engine is not deadlocked — `END_TURN` stays legal forever, which
-`test_games_that_stall_do_so_for_a_legitimate_reason` asserts. But it does mean **Phase 1 is
-not yet a trainable environment**: a reward signal based on winning is almost always zero.
-Phase 2's trading (4:1 bank, harbours, player-to-player) is the unblocking item, not the
-robber or dev cards.
+A stalled game was never a *deadlock* — `END_TURN` stays legal — and
+`test_almost_every_game_now_finishes` still checks that for any game that does not finish.
+
+## Trading and the bank
+
+`state.bank` holds 19 of each resource. **Cards are conserved**: every card is either in the
+bank or in a hand, so `sum(hands) + sum(bank) == 95` always
+(`test_cards_are_conserved`). Paying for a build returns the cards to the bank; without that
+the bank would drain and production would stop.
+
+Production is bank-limited, with the official shortage rule: if the bank cannot cover
+everything owed of a resource, **nobody** gets any of it — unless exactly one player is owed
+it, in which case they take what remains. So `distribute` tallies the whole payout per
+resource before any card moves, and returns `{player: [received per resource]}`.
+
+`trade_rates(state, player)` gives how many of each resource the player must hand over for
+one card back:
+
+| | rate |
+|---|---|
+| no harbour | 4 |
+| any generic (3:1) harbour | 3 on everything |
+| the matching specific (2:1) harbour | 2 on that resource |
+
+A harbour sits on a coastal *edge*, so a building on **either** endpoint grants it. Positions
+are fixed and evenly spaced round the coastline; only which harbour is where varies by seed —
+[decision 0010](decisions/0010-harbour-placement.md), which also records that the positions
+are not the official ones.
 
 ---
 
@@ -164,13 +198,17 @@ Mid-game, single-threaded:
 
 | | |
 |---|---|
-| `legal_actions` | ~174 µs (~5,700/s) — **the bottleneck**; scans 72 roads + 54 vertices twice |
+| `legal_actions` | ~166 µs (~6,000/s) — **the bottleneck**; scans 72 roads + 54 vertices twice, plus 20 trade pairs |
 | `apply` | negligible beside the above |
 | `clone()` snapshot | ~17 µs |
 | `clone(rng=state.rng)` | ~1.3 µs |
 | `longest_road_length` | ~76 µs (exponential search, ≤15 roads) |
+| `trade_rates` | ~2.8 µs |
 | `victory_points` | ~2.2 µs |
 | topology lookup | ~38 ns |
+
+Adding 20 candidate trades per call cost nothing measurable, because `trade_rates` is
+computed once and reused across all 20.
 
 Phase 3 should attack `legal_actions` — tracking a build frontier incrementally instead of
 rescanning, and memoising longest road against a state key. Not worth doing before the

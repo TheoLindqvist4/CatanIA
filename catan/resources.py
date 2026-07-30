@@ -43,6 +43,16 @@ SETTLEMENT_COST = _cost(wood=1, brick=1, sheep=1, wheat=1)
 CITY_COST = _cost(wheat=2, ore=3)
 DEV_CARD_COST = _cost(sheep=1, wheat=1, ore=1)
 
+#: Cards of each resource in the bank at the start of the game.
+BANK_PER_RESOURCE = 19
+
+#: Cards you must give the bank for one card back, without a harbour.
+BANK_RATE = 4
+#: With a generic (3:1) harbour.
+GENERIC_HARBOUR_RATE = 3
+#: With the matching specific (2:1) harbour.
+SPECIFIC_HARBOUR_RATE = 2
+
 
 def empty_hand():
     return [0] * NUM_RESOURCES

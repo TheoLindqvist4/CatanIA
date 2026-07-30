@@ -18,11 +18,11 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 |---|---|---|
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
-| **2** | Complete the rules | ⬜ next |
+| **2** | Complete the rules | 🔶 **in progress** — bank + trading done |
 | **3** | AI surface (action space, observations, env) | ⬜ not started |
 | **4** | Interfaces (CLI, web API) | ⬜ not started |
 
-276 tests. `python -m pytest -m "not slow"` runs the 266 fast ones in ~2s.
+320 tests. `python -m pytest -m "not slow"` runs the fast ones in ~2s.
 
 ---
 
@@ -35,7 +35,7 @@ catan/
   board.py         # ✅ one layout: numbers, resources, production index. IMMUTABLE.
   state.py         # ✅ GameState: vertex_owner[54], vertex_piece[54], edge_owner[72],
                    #    hands, supplies, phase, turn.  clone() / __eq__
-  actions.py       # ✅ Action = (type, position)
+  actions.py       # ✅ Action = (type, position, extra)
   rules.py         # ✅ legal_actions / apply — the single legality authority
   encoder.py       #    Phase 3: to_vector(state, perspective_player), hidden-info masked
   env.py           #    Phase 3: Gymnasium-style reset(seed) / step(action)
@@ -168,32 +168,42 @@ all collapsed into a single bit.
 message raised *because* the type was bogus. And `GameState.__eq__` required board *identity*, so
 replaying a seed compared unequal; `Board` now has value equality and a hash.
 
-## Phase 2 — Complete the rules ⬜
+## Phase 2 — Complete the rules 🔶
 
-- [ ] **Robber**: position, 7-handling, tile production blocking, steal one random card.
-      `give_cards_to_players(7)` is currently a silent no-op.
-- [ ] **Discard on 7** when holding more than 7 cards.
+Trading was moved to the front of this phase because Phase 1 measured only **4 of 40** random
+games reaching 10 points: a settlement needs four *different* resources, most players' buildings
+reach only three, and there was no way to convert a surplus. That made the reward signal
+almost always zero.
+
+- [x] **The bank**: 19 cards per resource, with cards conserved — every card is either in the
+      bank or in a hand, so the total is always 95. Paying for a build returns the cards.
+      Production is bank-limited with the official shortage rule: if the bank cannot cover
+      everything owed of a resource, nobody gets any unless exactly one player is owed it.
+- [x] **4:1 bank trading**, and **harbours** at 3:1 and 2:1. Nine harbours on coastal roads,
+      evenly spaced, both endpoints granting the port; positions fixed, types shuffled by seed —
+      [decision 0010](docs/decisions/0010-harbour-placement.md), which records that the
+      positions are *not* the official ones.
+      → **39 of 40 games now finish**, median 286 turns.
+- [ ] **Robber**: position on `GameState` (starting at `board.desert_tile`), 7-handling, blocking
+      that tile's production, and stealing one random card.
+- [ ] **Discard on 7** when holding more than 7 cards. Model it as repeated single-card discard
+      actions rather than choosing a multiset — far friendlier to a flat action space.
 - [ ] **Dev cards**: 25-card deck, buy / hold / play-timing (one per turn, not the turn bought).
       Knight, Road Building, Year of Plenty, Monopoly, Victory Point.
 - [ ] **Largest Army** (3+ knights, 2 VP), including keep-until-beaten.
 - [ ] **Longest Road award**: the 5-segment minimum, the 2 VP, and keep-until-beaten.
       The *measurement* is done — `rules.longest_road_length` and `rules.longest_road_holder`.
-- [ ] **Trading — do this first.** Measured: only **4 of 40** random games reach 10 points, because
-      a settlement needs four different resources and most players' buildings reach only three.
-      Players end up holding 100+ cards of the wrong kinds with no way to convert. Until this
-      lands, a win-based reward signal is almost always zero, so Phase 1 is **not yet a trainable
-      environment** — this matters more than the robber or dev cards.
-      See [docs/engine.md](docs/engine.md#-phase-1-games-usually-stall-and-trading-is-why).
-      - [ ] 4:1 with the bank
-      - [ ] **Harbours**: place them on `topology.COASTAL_ROADS` and grant the port to *both*
-            endpoints — i.e. `PERIMETER_VERTICES`, **not** `CORNER_VERTICES`. Then 3:1 and 2:1.
-      - [ ] Player-to-player offers.
-- [ ] **Bank limits**: 19 cards per resource. Needs a `bank` on `GameState`; hands are currently
-      unbounded, and random play reaches hundreds of a resource.
+- [ ] **Player-to-player trading.** Needs a design decision first: an unrestricted offer is a
+      multiset-for-multiset exchange, which does not flatten into a discrete action space. Likely
+      a bounded form (give *n* of X for *m* of Y, small *n*, *m*) plus accept/reject. Worth its
+      own decision record, and it interacts with Phase 3's action space.
 - [ ] **Official spiral layout** as an alternative to balanced generation, behind a config flag.
       The house rule makes double-production vertices impossible, so an agent trained only on it
       never learns to value a "double 6" spot —
       [decision 0005](docs/decisions/0005-balanced-board-generation.md).
+- [ ] **Official harbour positions**, replacing the evenly-spaced approximation
+      ([decision 0010](docs/decisions/0010-harbour-placement.md)). Needed before evaluating
+      against a real board or a human.
 
 ## Phase 3 — AI surface ⬜
 
