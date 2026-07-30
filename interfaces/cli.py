@@ -278,6 +278,18 @@ AGENTS = {
     "random": lambda seed, colour: RandomAgent(seed),
 }
 
+# A trained policy joins the roster when one has been exported. Optional: the CLI must work
+# on a checkout with no PyTorch installed.
+if pathlib.Path("checkpoints/policy.pt").is_file():
+    try:
+        from training.agent import PolicyAgent
+
+        AGENTS["learned"] = lambda seed, colour: PolicyAgent(
+            PolicyAgent.load("checkpoints/policy.pt").net, temperature=0.35, seed=seed
+        )
+    except ImportError:
+        pass
+
 
 # --------------------------------------------------------------------------- #
 # Driving                                                                     #

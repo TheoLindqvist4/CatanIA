@@ -174,6 +174,15 @@ CatanIA/
 │   │-- 👓 view.py            #   ce qu'un joueur a le droit de voir (liste blanche)
 │   │-- 🧠 heuristics.py      #   évaluation des positions (valeur marginale)
 │   │-- 🤖 agents.py          #   agents de référence et arène de matchs
+│-- 🧠 training/              # Auto-apprentissage (seul endroit qui importe PyTorch)
+│   │-- net.py               #   réseau politique/valeur, masquage inclus
+│   │-- rollout.py           #   collecte par siège, GAE, récompense terminale
+│   │-- ppo.py               #   la mise à jour et ses diagnostics
+│   │-- pool.py              #   adversaires gelés + ancre heuristique
+│   │-- clone.py             #   démarrage à chaud par imitation
+│   │-- evaluate.py          #   taux de victoire et intervalles de confiance
+│   │-- agent.py             #   PolicyAgent — se branche comme tout autre agent
+│   │-- train.py             #   la boucle
 │-- 🖥️ interfaces/            # Les seules parties qui affichent quelque chose
 │   │-- 🖼️ render.py          #   rendu du plateau en PNG
 │   │-- ⌨️ cli.py             #   jouer ou observer une partie en terminal
@@ -230,6 +239,35 @@ retire aucune règle. Sur 60 parties, sièges inversés :
 fois les cartes cachées de l'adversaire réécrites.
 
 Détails : [décision 0016](docs/decisions/0016-heuristic-opponent-and-difficulty.md).
+
+## 🧠 Entraîner un agent (Phase 8)
+
+Le moteur reste **sans dépendance**. Seul le paquet `training/` importe PyTorch, et les deux
+interfaces fonctionnent sans lui.
+
+```sh
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+python -m training.clone --games 300                 # imiter l'heuristique (~4 min)
+python -m training.train --resume checkpoints/cloned.pt --iterations 400 --lr 1e-4
+python -m training.agent checkpoints/best.pt checkpoints/policy.pt   # version jouable, 5 Mo
+```
+
+Le dernier appel écrit `checkpoints/policy.pt`, que les deux interfaces détectent
+automatiquement et proposent sous le nom `learned`.
+
+**PPO plutôt qu'AlphaZero.** Une recherche arborescente a besoin d'un état que l'on peut
+dérouler ; ici `clone()` copie la pioche de développement, le paquet de dés et les cartes de
+l'adversaire *à l'identique*, donc une simulation rejoue le même futur au lieu d'en
+échantillonner un. L'échantillonnage de croyances est un prérequis, et il n'est pas écrit.
+
+**Ce qui est mesuré.** Depuis zéro : 0.5% → 11% → 19.5% → 29.4% → 37.2% contre
+`HeuristicAgent(noise=0)` sur 2.7 M transitions. Par clonage : **30.8% en quatre minutes** —
+autant que soixante-dix minutes d'auto-apprentissage. L'agent entraîné **ne bat pas encore
+l'heuristique** ; `hard` reste donc l'adversaire par défaut.
+
+Détails et limites : [décision 0017](docs/decisions/0017-ppo-self-play.md),
+[décision 0018](docs/decisions/0018-clone-before-self-play.md).
 
 ## 🧪 Tests
 

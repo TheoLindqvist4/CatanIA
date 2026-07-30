@@ -449,23 +449,55 @@ why a person beat it 16–3 on the first try. `HeuristicAgent` supplies the miss
 placement was scored against unrelated positions. Both tables are keyed by integers, so nothing
 complained. See [decision 0016](docs/decisions/0016-heuristic-opponent-and-difficulty.md).
 
-## Phase 8 — Self-play ⬜
+## Phase 8 — Self-play ✅ (pipeline) / 🔬 (still improving the result)
 
-`HeuristicAgent` is the baseline Phase 7 existed to create. The question a learned policy has to
-answer is no longer "can it beat random" but "can it beat 96%-against-greedy".
+`HeuristicAgent` was the baseline Phase 7 existed to create. The question is no longer "can it
+beat random" but "can it beat 96.7%-against-greedy".
 
-- [ ] **PPO, not AlphaZero.** MCTS needs a simulator it can roll forward from a known position;
-      Catan has a shuffled dev deck, a shuffled dice deck and hidden hands, so a rollout would
-      need belief sampling to mean anything. PPO learns from the observation vector it actually
-      gets, which already hides what it should.
-- [ ] **Throughput is there.** Measured 3,327 steps/sec on one worker, 22,377 across 16 of 20
-      cores — 10M steps in about 7.5 minutes. This is what rules MCTS out and PPO in.
-- [ ] **Torch (CPU) as the first dependency.** The engine stays dependency-free; training does not
-      have to be.
-- [ ] **Self-play against a frozen pool** of past checkpoints, not only the current policy, so it
-      cannot win by exploiting one opponent's quirk.
-- [ ] **Measured the same way** — `play_match` against `HeuristicAgent(noise=0)`, seats swapped.
-      It drops into `api.OPPONENTS` as one more entry when it beats it.
+- [x] **PPO, not AlphaZero.** MCTS needs a state it can roll forward; `clone()` copies the dev
+      deck, the dice deck and opponents' cards verbatim, so a rollout replays the same future
+      rather than sampling one. Belief sampling is a prerequisite and is not built.
+      See [decision 0017](docs/decisions/0017-ppo-self-play.md).
+- [x] **Torch (CPU) as the first dependency.** The engine stays dependency-free; `training/`
+      is the only package that imports it, and both interfaces work without it.
+- [x] **`training/`** — `net`, `rollout`, `ppo`, `pool`, `clone`, `evaluate`, `agent`, `train`.
+- [x] **Three engine invariants pinned.** The winner is always the actor (so `step()`'s reward
+      is always `+1` and the loser's never arrives), the terminal observation is the winner's,
+      the terminal mask is empty. All three fail silently; all three are now regression tests.
+- [x] **Self-play against a frozen pool**, drawn per game — 60% live policy, 15% heuristic as
+      an external anchor, the rest past selves.
+- [x] **Behaviour cloning first.** 300 heuristic games, 86,551 decisions, 47 seconds to
+      generate — reaches 30.8% against the heuristic in about four minutes, matching 70 minutes
+      of from-scratch self-play. See [decision 0018](docs/decisions/0018-clone-before-self-play.md).
+- [x] **The encoder was 57% of training time.** The board-static ~40% of an observation is now
+      computed once per `Board`; verified bit-identical over 3,200 encodings.
+      See [decision 0019](docs/decisions/0019-cache-the-board-static-observation.md).
+- [x] **Measured honestly.** From scratch: 0.5% → 11% → 19.5% → 29.4% → 37.2% against
+      `HeuristicAgent(noise=0)` over 2.7M transitions. Cloned: 30.8% in four minutes.
+
+### Where it stands
+
+The pipeline is correct and the learning is real, but **the trained policy does not yet beat
+the heuristic**, so `hard` remains the default opponent. A checkpoint is offered as `learned`
+in both interfaces only when `checkpoints/policy.pt` exists.
+
+### What is actually in the way
+
+Ranked by evidence, not by appeal:
+
+- [ ] **The observation has no history.** It is a pure snapshot — nothing records what the
+      opponent discarded, bought or built over time. "They have hoarded ore for three turns"
+      is not representable. This is the hardest ceiling and it is an *observation* problem.
+- [ ] **The network is an MLP over a flat 1808-vector.** That vertex 23 neighbours vertex 24 is
+      never given to it, though `topology.py` knows. The tiles section is 27% of the input and
+      constant within a game, so a flat first layer can spend capacity on board identity —
+      the cloning train/test gap (87% vs 71%) is that effect. A graph network over the
+      vertex/road structure is the obvious next architecture.
+- [ ] **The rollout is single-process.** Measured 3,327 env steps/sec on one worker versus
+      22,377 across 16 of 20 cores. Everything is picklable and Windows `spawn` is verified;
+      this is 4-8x more data for the same wall-clock and is the cheapest remaining win.
+- [ ] **No lookahead.** A 1-ply expectation over the dice using the value head needs no belief
+      sampling and would cost one forward pass per candidate.
 
 ## What this deliberately does not include
 

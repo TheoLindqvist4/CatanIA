@@ -46,6 +46,9 @@ the reasoning at the time is the point.
 | [0014](decisions/0014-ai-surface.md) | The AI surface: action space, observations, environment | accepted |
 | [0015](decisions/0015-public-view-instead-of-a-cheating-agent.md) | Agents see a `PublicView`, not the state | accepted |
 | [0016](decisions/0016-heuristic-opponent-and-difficulty.md) | A heuristic opponent, with difficulty as noise | accepted |
+| [0017](decisions/0017-ppo-self-play.md) | PPO self-play, not AlphaZero | accepted |
+| [0018](decisions/0018-clone-before-self-play.md) | Clone the heuristic, then self-play | accepted |
+| [0019](decisions/0019-cache-the-board-static-observation.md) | Cache the board-static half of an observation | accepted |
 
 ## Worth knowing
 
@@ -129,6 +132,20 @@ Consequences that are easy to trip over:
 - **`VERTEX_TILES` and `TILE_VERTICES` are both keyed by plain integers**, so swapping them
   type-checks, runs, and silently produces nonsense. It happened once, in `robber_damage`.
   When indexing either, the variable name should say which id it holds.
+- **`step()`'s reward is always `+1`, and the loser never receives theirs.** The winner is
+  always the player who just acted, so `LOSS_REWARD` is unreachable on the normal path. A
+  learner that consumed the returned reward would train on winners only, its critic would
+  converge to `V = 1`, and nothing would crash. Read `info["winner"]` and write both seats
+  ([0017](decisions/0017-ppo-self-play.md)).
+- **At `GAME_OVER`, `current_player` becomes the winner**, so the final observation is the
+  *winner's* view and the final mask is all-zero. Bootstrapping the loser's trajectory from
+  that observation is an exact sign flip on half the data.
+- **~40% of an observation never changes during a game.** It is cached on the `Board` and
+  copied. Do not add a board-static feature to the per-encode path — put it in
+  `_static_template` ([0019](decisions/0019-cache-the-board-static-observation.md)).
+- **12.3% of decisions have exactly one legal action.** No policy gradient exists for them,
+  so training skips them — but a forced action can still end the game, and its outcome must
+  land on the seat's previous stored transition.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

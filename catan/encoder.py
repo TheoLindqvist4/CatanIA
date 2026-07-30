@@ -57,6 +57,7 @@ from catan.topology import (
     NUM_TILES,
     NUM_VERTICES,
     ROAD_VERTICES,
+    VERTEX_NEIGHBOURS,
     VERTEX_TILES,
 )
 
@@ -192,6 +193,71 @@ def player_slots(state, me):
 
 
 # --------------------------------------------------------------------------- #
+# The board-static half of an observation                                     #
+# --------------------------------------------------------------------------- #
+
+def _static_template(board):
+    """The parts of an observation that depend on the *layout* and never on play.
+
+    Which resource sits on a tile, its number token, its odds, which harbours a vertex can
+    reach, and the pip potential of a vertex are all fixed the moment the board is generated.
+    Recomputing them on every encode is most of what encoding costs — profiling a training
+    rollout put ``_encode_vertices`` at 45% of the total, nearly all of it in one generator
+    expression summing three tiles' odds for a board that had not changed in 14,000 calls.
+
+    So it is computed once per :class:`~catan.board.Board` and cached on it. The board is
+    immutable and shared across clones, so one template serves an entire training run.
+    """
+    template = board.__dict__.get("_observation_template")
+    if template is not None:
+        return template
+
+    out = [0.0] * SIZE
+
+    base = LAYOUT["tiles"].start
+    for tile in range(1, NUM_TILES + 1):
+        at = base + (tile - 1) * TILE_FEATURES
+        resource = board.resource_at(tile)
+        number = board.number_at(tile)
+
+        out[at + (NUM_RESOURCES if resource is None else int(resource))] = 1.0
+        at += NUM_RESOURCES + 1
+        out[at + ROLLS.index(number)] = 1.0
+        at += len(ROLLS)
+        # a desert never pays out, whatever its token says
+        out[at] = 0.0 if resource is None else _odds(number)
+        # at + 1 is the robber flag, which moves — left at 0 for the caller
+
+    base = LAYOUT["vertices"].start
+    for vertex in range(1, NUM_VERTICES + 1):
+        # owner one-hot and the city flag are play, not layout; skip to the harbours
+        at = base + (vertex - 1) * VERTEX_FEATURES + (MAX_PLAYERS + 1) + 1
+
+        harbours = board.harbours_at(vertex)
+        if not harbours:
+            out[at] = 1.0
+        else:
+            for harbour in harbours:
+                out[at + (1 if harbour is GENERIC_HARBOUR else 2 + int(harbour))] = 1.0
+        at += HARBOUR_KINDS
+
+        # the classic settlement heuristic: how often this spot pays out at all.
+        # The 0.0 start matters: a corner touching only the desert sums an empty
+        # generator, and bare sum() would return int 0 into a float vector.
+        out[at] = sum(
+            (
+                _odds(board.number_at(tile))
+                for tile in VERTEX_TILES[vertex]
+                if board.resource_at(tile) is not None
+            ),
+            0.0,
+        )
+
+    board.__dict__["_observation_template"] = out
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Encoding                                                                    #
 # --------------------------------------------------------------------------- #
 
@@ -209,7 +275,7 @@ def encode(state, me=None):
     if me not in state.players:
         raise ValueError(f"player must be in 1..{state.num_players}, got {me}")
 
-    out = [0.0] * SIZE
+    out = _static_template(state.board).copy()
     slots = player_slots(state, me)
 
     _encode_tiles(state, out)
@@ -221,62 +287,56 @@ def encode(state, me=None):
 
 
 def _encode_tiles(state, out):
-    base = LAYOUT["tiles"].start
-    for tile in range(1, NUM_TILES + 1):
-        at = base + (tile - 1) * TILE_FEATURES
-        resource = state.board.resource_at(tile)
-        number = state.board.number_at(tile)
-
-        # resource one-hot, with the desert in the last slot
-        out[at + (NUM_RESOURCES if resource is None else int(resource))] = 1.0
-        at += NUM_RESOURCES + 1
-
-        out[at + ROLLS.index(number)] = 1.0
-        at += len(ROLLS)
-
-        # a desert never pays out, whatever its token says
-        out[at] = 0.0 if resource is None else _odds(number)
-        at += 1
-
-        out[at] = 1.0 if state.robber_tile == tile else 0.0
+    """Only the robber moves; everything else about a tile is in the static template."""
+    at = LAYOUT["tiles"].start + (state.robber_tile - 1) * TILE_FEATURES
+    out[at + NUM_RESOURCES + 1 + len(ROLLS) + 1] = 1.0
 
 
 def _encode_vertices(state, out, me, slots):
+    """Ownership and buildability. Harbours and pip potential come from the template.
+
+    The two buildability flags are derived in one pass over what is *owned* rather than by
+    asking :func:`catan.rules.respects_distance_rule` and
+    :func:`catan.rules.touches_own_road` per vertex. Those were 108 calls per encode and
+    38% of what encoding cost after the static template; there are at most ten settlements
+    and fifteen roads to walk instead of fifty-four vertices to interrogate.
+
+    The rules remain the authority — ``test_buildability_flags_agree_with_the_rules``
+    cross-checks every vertex of every board against them, which is what keeps this
+    shortcut honest.
+    """
     base = LAYOUT["vertices"].start
+    owners = state.vertex_owner
+    pieces = state.vertex_piece
+
+    blocked = set()
+    for vertex in range(1, NUM_VERTICES + 1):
+        if owners[vertex] != NO_OWNER:
+            blocked.add(vertex)
+            blocked.update(VERTEX_NEIGHBOURS[vertex])
+
+    my_junctions = set()
+    for road in range(1, NUM_ROADS + 1):
+        if state.edge_owner[road] == me:
+            my_junctions.update(ROAD_VERTICES[road])
+
+    # offset of the two buildability flags within a vertex block, past the harbour
+    # one-hot and the pip potential
+    flags = (MAX_PLAYERS + 1) + 1 + HARBOUR_KINDS + 1
+
     for vertex in range(1, NUM_VERTICES + 1):
         at = base + (vertex - 1) * VERTEX_FEATURES
-        owner = state.vertex_owner[vertex]
+        owner = owners[vertex]
 
         out[at + (0 if owner == NO_OWNER else 1 + slots[owner])] = 1.0
-        at += MAX_PLAYERS + 1
+        if pieces[vertex] is Piece.CITY:
+            out[at + MAX_PLAYERS + 1] = 1.0
 
-        out[at] = 1.0 if state.vertex_piece[vertex] is Piece.CITY else 0.0
-        at += 1
-
-        harbours = state.board.harbours_at(vertex)
-        if not harbours:
+        at += flags
+        if vertex not in blocked:
             out[at] = 1.0
-        else:
-            for harbour in harbours:
-                out[at + (1 if harbour is GENERIC_HARBOUR else 2 + int(harbour))] = 1.0
-        at += HARBOUR_KINDS
-
-        # the classic settlement heuristic: how often this spot pays out at all.
-        # The 0.0 start matters: a corner touching only the desert sums an empty
-        # generator, and bare sum() would return int 0 into a float vector.
-        out[at] = sum(
-            (
-                _odds(state.board.number_at(tile))
-                for tile in VERTEX_TILES[vertex]
-                if state.board.resource_at(tile) is not None
-            ),
-            0.0,
-        )
-        at += 1
-
-        out[at] = 1.0 if rules.respects_distance_rule(state, vertex) else 0.0
-        at += 1
-        out[at] = 1.0 if rules.touches_own_road(state, me, vertex) else 0.0
+        if vertex in my_junctions:
+            out[at + 1] = 1.0
 
 
 def _reachable_vertices(state, me):

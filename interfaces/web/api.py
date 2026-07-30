@@ -15,6 +15,7 @@ implementation that could disagree with the engine, which is the problem the rew
 """
 
 import itertools
+import pathlib
 
 from catan import action_space, rules
 from catan.actions import ActionType
@@ -42,6 +43,26 @@ OPPONENTS = {
     "random": RandomAgent,
 }
 RULESETS = {"ranked1v1": RANKED_1V1, "base": BASE_GAME}
+
+#: A trained policy, if one has been exported to this path. Optional on purpose: the game
+#: must stay playable on a checkout with no PyTorch and no checkpoint, so a missing file or
+#: a missing torch is not an error — that opponent simply is not offered.
+LEARNED_CHECKPOINT = pathlib.Path("checkpoints/policy.pt")
+
+
+def _register_learned():
+    if not LEARNED_CHECKPOINT.is_file():
+        return
+    try:
+        from training.agent import PolicyAgent
+    except ImportError:
+        return                                    # no torch on this checkout
+    OPPONENTS["learned"] = lambda seed: PolicyAgent(
+        PolicyAgent.load(LEARNED_CHECKPOINT).net, temperature=0.35, seed=seed
+    )
+
+
+_register_learned()
 
 #: Board art, keyed the way the client asks for it.
 TILE_IMAGES = {

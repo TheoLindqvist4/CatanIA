@@ -18,3 +18,10 @@ Thumbs.db
 
 # Rendered boards written during development
 /board.png
+
+# Training artefacts. Checkpoints are ~70 MB each (they carry the optimiser state and the
+# frozen opponent pool); the slim playable export is checkpoints/policy.pt and is also large
+# enough that it belongs in a release rather than in git history.
+/checkpoints/
+/runs/
+/checkpoints_train.log
