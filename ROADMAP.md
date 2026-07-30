@@ -20,9 +20,9 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **1** | Real state model + economy | ✅ **done** |
 | **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
 | **3** | AI surface (action space, observations, env) | ✅ **done** |
-| **4** | Interfaces (renderer, CLI, web API) | 🔶 **in progress** — renderer done |
+| **4** | Interfaces (renderer, CLI) | ✅ **done** |
 
-599 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+553 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -50,14 +50,9 @@ catan/
   agents.py        # ✅ random and greedy baselines + play_match
 interfaces/
   render.py        # ✅ draws a GameState as a PNG, straight from the topology lattice
+  cli.py           # ✅ play or watch in the terminal — the ONLY place print()/input() appear
   static/images/   # ✅ board art, vendored from FullStackCatan
-  cli.py           #    Phase 4: the ONLY place print()/input() may appear
-  api.py           #    Phase 4: adapter for the FullStackCatan front end
 tests/
-
-Board.py  Player.py  Deck.py  Dice.py  Game_2_players.py
-                   # DEPRECATED legacy engine. Kept only so `python Game_2_players.py`
-                   # still runs; deleted in Phase 4 with interfaces/cli.py. No new work.
 ```
 
 See [`docs/engine.md`](docs/engine.md) for how the layers fit together and how to drive a
@@ -290,11 +285,28 @@ adding 3–4 player training or human play.
       nothing to keep in sync with the rules.
       Board art vendored from [FullStackCatan](https://github.com/TheoLindqvist4/FullStackCatan)
       — 32 cropped PNGs for tiles, number tokens, settlements, cities, roads and spot markers.
-- [ ] `interfaces/cli.py` over the pure core — the only place `print`/`input` may appear.
-- [ ] **Delete the legacy engine** (`Board.py`, `Player.py`, `Deck.py`, `Dice.py`,
-      `Game_2_players.py`) once the CLI replaces it as the playable entry point.
-- [ ] `interfaces/api.py`; wire up
-      [FullStackCatan](https://github.com/TheoLindqvist4/FullStackCatan).
+- [x] **`interfaces/cli.py`** — play or watch a game in the terminal, and the only module that
+      calls `print` or `input`. The board is drawn from the same `topology` lattice the PNG
+      renderer uses, as a character grid: vertices on their own rows and columns, roads in the
+      gaps between them, tile labels in the middle of their hexagon. Nothing positioned by hand.
+      Hidden information is respected — an opponent's hand shows as a count, and victory-point
+      cards stay hidden until the game ends.
+
+      ```
+      python -m interfaces.cli                          you vs the greedy agent
+      python -m interfaces.cli --agents greedy random   watch two agents
+      python -m interfaces.cli --games 20 --quiet       benchmark, results only
+      python -m interfaces.cli --render out/            write a PNG per action
+      ```
+- [x] **Deleted the legacy engine** — `Board.py`, `Player.py`, `Deck.py`, `Dice.py` and
+      `Game_2_players.py`, along with their tests. The CLI replaces them as the playable entry
+      point, and git history keeps them if they are ever wanted.
+
+**Out of scope: a FullStackCatan adapter.** The two projects stay independent. The board art was
+*copied* here, which is not a coupling; nothing imports across repos, and neither has to move in
+step with the other. If a web view is wanted later it should be built here, rendering engine
+state from the same lattice `render.py` uses — not by having the other project generate its own
+board, which is the second-authority problem this engine was rebuilt to remove.
 
 ---
 

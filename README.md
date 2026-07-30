@@ -22,7 +22,7 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 ## ⭐ État actuel
 
-**Fonctionne** (417 tests) :
+**Fonctionne** (553 tests) :
 
 - 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
   toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
@@ -119,30 +119,29 @@ save(env.state, "board.png")
    ```sh
    pip install -r requirements.txt
    ```
-3. 🎮 **Piloter une partie** avec le moteur :
-   ```python
-   import random
-   from catan.state import GameState, Phase
-   from catan import rules
-
-   state = GameState(num_players=3, seed=42)
-   agent = random.Random(0)
-
-   # La limite de tours reste prudente : une partie peut encore ne pas se terminer.
-   while state.phase is not Phase.GAME_OVER and state.turn_number < 2000:
-       if state.phase is Phase.ROLL:
-           rules.roll_dice(state)
-           continue
-       actions = rules.legal_actions(state)
-       if not actions:
-           break
-       rules.apply(state, agent.choice(actions))   # votre agent choisit ici
-
-   print(state.winner, rules.scores(state))
+3. 🎮 **Jouer dans le terminal** :
+   ```sh
+   python -m interfaces.cli                          # vous contre l'agent glouton
+   python -m interfaces.cli --agents greedy random   # observer deux agents
+   python -m interfaces.cli --games 20 --quiet       # comparer, résultats seuls
+   python -m interfaces.cli --render out/            # écrire un PNG par action
    ```
 
-   Voir [docs/engine.md](docs/engine.md). L'ancienne démo en terminal
-   (`python Game_2_players.py`) fonctionne encore, mais elle est dépréciée.
+4. 🤖 **Ou piloter le moteur depuis du code** :
+   ```python
+   from catan.env import CatanEnv
+
+   env = CatanEnv(num_players=2)          # règles du 1 contre 1 classé
+   obs, info = env.reset(seed=0)
+
+   while not info["done"]:
+       action = mon_agent(obs, info["mask"])          # un indice, doit être légal
+       obs, reward, terminated, truncated, info = env.step(action)
+
+   print(info["winner"], info["scores"])
+   ```
+
+   Voir [docs/engine.md](docs/engine.md) et [docs/ai-surface.md](docs/ai-surface.md).
 
 ## 📂 Structure du projet
 
@@ -162,15 +161,14 @@ CatanIA/
 │   │-- 👁️ encoder.py         #   l'observation destinée au réseau
 │   │-- 🕹️ env.py             #   environnement reset / step
 │   │-- 🤖 agents.py          #   agents de référence et arène de matchs
+│-- 🖥️ interfaces/            # Les seules parties qui affichent quelque chose
+│   │-- 🖼️ render.py          #   rendu du plateau en PNG
+│   │-- ⌨️ cli.py             #   jouer ou observer une partie en terminal
 │-- 🧪 tests/                 # Suite de tests (pytest)
 │-- 📚 docs/                  # Audit, géométrie, moteur, décisions clés
 │-- 🛣️ ROADMAP.md             # État du projet et phases
 │-- 📄 README.md              # Documentation du projet
 │
-│-- 🗄️ Board.py Player.py Deck.py Dice.py Game_2_players.py
-                              # Ancien moteur, DÉPRÉCIÉ. Conservé uniquement pour que
-                              # `python Game_2_players.py` fonctionne encore ; supprimé
-                              # en phase 4 avec interfaces/cli.py.
 ```
 
 `catan/topology.py` ne contient **aucune** table écrite à la main. Toute la géométrie est

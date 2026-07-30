@@ -15,6 +15,11 @@ been established: how things work, and why they were decided that way.
 | [engine.md](engine.md) | How the engine fits together: the layers, the state model, and how to drive a game. **Start here** to use the code. |
 | [ai-surface.md](ai-surface.md) | How to train against it: the action space, the observation, the environment, and the baselines. |
 | [images/board-example.png](images/board-example.png) | A game rendered by `interfaces/render.py`. |
+
+Everything that prints lives in `interfaces/`: `render.py` draws a PNG, `cli.py` plays or
+watches a game in the terminal. Both lay the board out from the same `topology` lattice, so
+neither carries positioning logic of its own.
+
 | [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 
 ## Decisions

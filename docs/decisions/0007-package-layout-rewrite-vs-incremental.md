@@ -93,3 +93,14 @@ new work: new rules go in `catan.rules`. The one change made to them was applyin
   being exactly one shared module.
 - Test files nearly doubled. The Phase 0 geometry tests needed only an import change,
   because they assert against the drawings rather than against module paths.
+
+## Outcome
+
+The plan held. `Board.py`, `Player.py`, `Deck.py`, `Dice.py` and `Game_2_players.py` were
+deleted in Phase 4, along with their tests, once `interfaces/cli.py` replaced them as the
+playable entry point. They coexisted with `catan/` for three phases and accumulated no new
+work in that time beyond applying decision 0006's strict longest-road ruling, which was done
+to avoid the repository holding two contradictory answers.
+
+`topology.py` moved into the package unchanged, as predicted, and never needed a second copy.
+Git history keeps the old engine if it is ever wanted.
