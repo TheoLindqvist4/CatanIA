@@ -16,7 +16,7 @@ import torch
 
 from catan import action_space, encoder, rules
 from catan.actions import ActionType
-from training.net import PolicyValueNet
+from training.net import PolicyValueNet, build
 
 
 class PolicyAgent:
@@ -40,7 +40,7 @@ class PolicyAgent:
     @classmethod
     def load(cls, path, temperature=0.0, seed=None, map_location="cpu"):
         checkpoint = torch.load(path, map_location=map_location, weights_only=False)
-        net = PolicyValueNet.from_config(checkpoint["config"])
+        net = build(checkpoint["config"])
         net.load_state_dict(checkpoint["weights"])
         agent = cls(net, temperature=temperature, seed=seed)
         agent.metadata = {k: v for k, v in checkpoint.items()

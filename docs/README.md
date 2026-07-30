@@ -49,6 +49,8 @@ the reasoning at the time is the point.
 | [0017](decisions/0017-ppo-self-play.md) | PPO self-play, not AlphaZero | accepted |
 | [0018](decisions/0018-clone-before-self-play.md) | Clone the heuristic, then self-play | accepted |
 | [0019](decisions/0019-cache-the-board-static-observation.md) | Cache the board-static half of an observation | accepted |
+| [0020](decisions/0020-parallel-rollouts-and-lookahead.md) | Parallel rollouts, and a lookahead that does not cheat | accepted |
+| [0021](decisions/0021-structure-aware-network.md) | A network that knows the board has a shape | accepted |
 
 ## Worth knowing
 
@@ -146,6 +148,14 @@ Consequences that are easy to trip over:
 - **12.3% of decisions have exactly one legal action.** No policy gradient exists for them,
   so training skips them — but a forced action can still end the game, and its outcome must
   land on the seat's previous stored transition.
+- **Applying an action to a `clone()` can reveal hidden information.** The dev deck, the dice
+  deck and opponents' hands are copied verbatim, so a lookahead over `BUY_DEV_CARD`,
+  `MOVE_ROBBER`, `PLAY_KNIGHT`, `END_TURN` or `PLAY_MONOPOLY` *sees the real outcome*.
+  `training.agent.DETERMINISTIC_TYPES` is the boundary and is a correctness constraint, not a
+  performance one ([0020](decisions/0020-parallel-rollouts-and-lookahead.md)).
+- **Benchmark a persistent collector with warm-up calls.** Transitions are banked in bursts
+  when games finish, so a short measurement measures luck — the first parallel benchmark
+  reported 4 workers as faster than 8 for exactly that reason.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

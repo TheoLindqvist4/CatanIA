@@ -39,7 +39,7 @@ import numpy as np
 import torch
 
 from catan import action_space, encoder
-from training.net import PolicyValueNet
+from training.net import PolicyValueNet, build
 from training.rollout import TRAINING_MAX_TURNS, Rollout, SelfPlayCollector
 
 #: Per-worker state. Rebuilt once per process, then reused for the whole run.
@@ -51,7 +51,7 @@ def _configure(settings):
     torch.set_num_threads(1)
     torch.manual_seed(settings["seed"])
 
-    net = PolicyValueNet.from_config(settings["config"])
+    net = build(settings["config"])
     net.eval()
 
     state = {
@@ -74,7 +74,7 @@ def _configure(settings):
         weights = np.arange(1, len(state["frozen"]) + 1, dtype=float)
         index = int(state["rng"].choice(len(state["frozen"]), p=weights / weights.sum()))
         iteration, stored = state["frozen"][index]
-        frozen = PolicyValueNet.from_config(settings["config"])
+        frozen = build(settings["config"])
         frozen.load_state_dict(stored)
         frozen.eval()
         return frozen, f"frozen@{iteration}"

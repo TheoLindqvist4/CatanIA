@@ -183,6 +183,7 @@ def main(argv=None):
                         help="label with the noisy teacher's actual move rather than the "
                              "noiseless heuristic's; caps achievable agreement at ~71%%")
     parser.add_argument("--hidden", type=int, nargs="+", default=[512, 512])
+    parser.add_argument("--net", choices=["flat", "structured"], default="flat")
     parser.add_argument("--max-turns", type=int, default=TRAINING_MAX_TURNS)
     parser.add_argument("--threads", type=int, default=6)
     parser.add_argument("--seed", type=int, default=0)
@@ -200,7 +201,13 @@ def main(argv=None):
     print(f"{len(dataset[2]):,} decisions, "
           f"{dataset[0].element_size() * dataset[0].nelement() / 1e6:.0f} MB")
 
-    net = PolicyValueNet(encoder.SIZE, action_space.NUM_ACTIONS, hidden=tuple(args.hidden))
+    if args.net == "structured":
+        from training.structured_net import StructuredPolicyValueNet
+
+        net = StructuredPolicyValueNet()
+    else:
+        net = PolicyValueNet(encoder.SIZE, action_space.NUM_ACTIONS,
+                             hidden=tuple(args.hidden))
     print(f"{net!r}\ncloning")
     history = clone(net, dataset, epochs=args.epochs, batch=args.batch, lr=args.lr)
 

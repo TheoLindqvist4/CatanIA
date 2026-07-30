@@ -127,3 +127,23 @@ class PolicyValueNet(nn.Module):
     def __repr__(self):
         return (f"PolicyValueNet({self.obs_size} -> {list(self.hidden)} -> "
                 f"{self.num_actions}, {self.num_parameters():,} params)")
+
+
+#: Networks that can appear in a checkpoint, keyed by the ``kind`` in their config.
+#:
+#: A checkpoint has to say which class to rebuild. The flat network predates the field, so
+#: its absence means "flat" — old checkpoints keep loading.
+def build(config):
+    """Rebuild whichever network a checkpoint's config describes."""
+    kind = config.get("kind", "flat")
+    if kind == "flat":
+        return PolicyValueNet.from_config(
+            {k: v for k, v in config.items() if k != "kind"}
+        )
+    if kind == "structured":
+        from training.structured_net import StructuredPolicyValueNet
+
+        return StructuredPolicyValueNet.from_config(
+            {k: v for k, v in config.items() if k != "kind"}
+        )
+    raise ValueError(f"unknown network kind {kind!r} in checkpoint")

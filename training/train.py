@@ -25,7 +25,7 @@ import torch
 from catan import action_space, encoder
 from catan.agents import HeuristicAgent
 from training.evaluate import evaluate, format_result
-from training.net import PolicyValueNet
+from training.net import PolicyValueNet, build
 from training.pool import OpponentPool
 from training.ppo import PPO
 from training.parallel import ParallelCollector
@@ -34,12 +34,17 @@ from training.rollout import SelfPlayCollector
 DEFAULT_CHECKPOINTS = pathlib.Path("checkpoints")
 
 
-def build(args):
-    net = PolicyValueNet(
-        obs_size=encoder.SIZE,
-        num_actions=action_space.NUM_ACTIONS,
-        hidden=tuple(args.hidden),
-    )
+def build_from_args(args):
+    if args.net == "structured":
+        from training.structured_net import StructuredPolicyValueNet
+
+        net = StructuredPolicyValueNet()
+    else:
+        net = PolicyValueNet(
+            obs_size=encoder.SIZE,
+            num_actions=action_space.NUM_ACTIONS,
+            hidden=tuple(args.hidden),
+        )
     ppo = PPO(
         net,
         lr=args.lr,
@@ -70,7 +75,7 @@ def train(args):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    net, ppo = build(args)
+    net, ppo = build_from_args(args)
     pool = OpponentPool(
         capacity=args.pool_size,
         self_play=args.self_play,
@@ -81,7 +86,7 @@ def train(args):
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        net = PolicyValueNet.from_config(checkpoint["config"])
+        net = build(checkpoint["config"])
         net.load_state_dict(checkpoint["weights"])
         ppo = PPO(net, lr=args.lr, clip=args.clip, epochs=args.epochs,
                   minibatch=args.minibatch, entropy_coef=args.entropy,
@@ -253,6 +258,10 @@ def parse(argv=None):
                         help="games are adjudicated on victory points beyond this")
 
     parser.add_argument("--hidden", type=int, nargs="+", default=[512, 512])
+    parser.add_argument("--net", choices=["flat", "structured"], default="flat",
+                        help="structured shares weights across board elements: measured "
+                             "80.3%% held-out cloning agreement against flat's 69.6%%, with a "
+                             "2.2-point train/test gap against 13.9 — but a worse value head")
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--anneal-lr", action="store_true", default=True)
     parser.add_argument("--clip", type=float, default=0.2)
