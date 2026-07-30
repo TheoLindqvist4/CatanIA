@@ -112,7 +112,10 @@ def test_the_environment_stops_for_a_pre_roll_development_card():
     _, info = env._observe()
     assert info["phase"] is Phase.ROLL
     offered = {action_space.decode(i).type for i in info["legal"]}
-    assert offered == {ActionType.PLAY_KNIGHT}
+
+    # Both halves of the choice. Playing a card before the roll is *optional*, so offering
+    # only the card would force a player holding a Knight to burn it every single turn.
+    assert offered == {ActionType.PLAY_KNIGHT, ActionType.ROLL}
 
 
 def test_rolling_is_skipped_repeatedly_when_nobody_has_a_choice():
@@ -192,7 +195,7 @@ def test_an_illegal_index_raises_rather_than_being_ignored():
         env.step(illegal)
 
 
-@pytest.mark.parametrize("bad", [-1, 324, 10_000])
+@pytest.mark.parametrize("bad", [-1, 325, 10_000])
 def test_an_out_of_range_index_raises(bad):
     env = CatanEnv()
     env.reset(seed=0)

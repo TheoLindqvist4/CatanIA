@@ -282,13 +282,14 @@ AGENTS = {
 # on a checkout with no PyTorch installed.
 if pathlib.Path("checkpoints/policy.pt").is_file():
     try:
-        from catan import encoder as _encoder
+        from catan import action_space as _action_space, encoder as _encoder
         from training.agent import PolicyAgent
 
         _learned = PolicyAgent.load("checkpoints/policy.pt")
         # a checkpoint from before an encoder change loads fine and then fails on the
         # first move, so check the observation it was trained on
-        if _learned.net.obs_size == _encoder.SIZE:
+        if (_learned.net.obs_size == _encoder.SIZE
+                and _learned.net.num_actions == _action_space.NUM_ACTIONS):
             AGENTS["learned"] = lambda seed, colour: PolicyAgent(
                 _learned.net, temperature=0.35, seed=seed
             )

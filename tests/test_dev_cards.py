@@ -6,7 +6,7 @@ import random
 import pytest
 
 import catan.topology as T
-from catan import rules
+from catan import action_space, rules
 from catan.actions import (
     ActionType,
     build_road,
@@ -702,3 +702,103 @@ def test_awards_plus_buildings_plus_cards_add_up():
     hand_card(state, 1, DevCard.VICTORY_POINT, count=2)   # 2
     rules.update_awards(state)
     assert rules.victory_points(state, 1) == 10
+
+
+# =========================================================================== #
+# PLAYING ONE BEFORE THE ROLL IS OPTIONAL                                     #
+# =========================================================================== #
+#
+# It was not, and the bug was invisible from the engine's side: `legal_actions` returned
+# the card plays and nothing else, so a player holding a Knight was forced to play it every
+# single turn. The environment only rolls by itself when *nothing* is legal, so there was
+# no way through the turn without burning the card.
+
+def _waiting_to_roll(card, seed=9):
+    """A game paused before the dice with exactly ``card`` playable."""
+    from catan.env import CatanEnv
+
+    env = CatanEnv(num_players=2)
+    _, info = env.reset(seed=seed)
+    while env.state.in_setup:
+        _, _, _, _, info = env.step(info["legal"][0])
+
+    state = env.state
+    for held in DevCard:
+        state.dev_cards[state.current_player][held] = 0
+        state.dev_cards_new[state.current_player][held] = 0
+    if card is not None:
+        state.dev_cards[state.current_player][card] = 1
+    state.phase = Phase.ROLL
+    state.rolled_this_turn = False
+    state.dev_card_played_this_turn = False
+    return env
+
+
+@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
+def test_you_can_always_decline_and_just_roll(card):
+    """Every playable card, not only the Knight."""
+    env = _waiting_to_roll(card)
+    offered = {action_space.decode(i).type for i in action_space.legal_indices(env.state)}
+    assert ActionType.ROLL in offered, f"{card.name} cannot be declined"
+    assert len(offered) == 2, offered
+
+
+@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
+def test_declining_rolls_the_dice_and_keeps_the_card(card):
+    env = _waiting_to_roll(card)
+    _, info = env._observe()
+    index = next(i for i in info["legal"]
+                 if action_space.decode(i).type is ActionType.ROLL)
+
+    env.step(index)
+    state = env.state
+    assert state.last_roll is not None, "declining did not roll"
+    assert state.dev_cards[1][card] == 1, "the card was consumed anyway"
+    assert not state.dev_card_played_this_turn
+
+
+def test_with_no_card_there_is_no_decision_and_the_env_rolls_itself():
+    """The choice only appears when there is one. Otherwise a player would have to click
+    'roll' every turn for an action with exactly one answer."""
+    env = _waiting_to_roll(None)
+    assert action_space.legal_indices(env.state) == []
+
+
+@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
+def test_playing_it_before_the_roll_still_works(card):
+    """The fix must not have removed the reason the stop exists."""
+    env = _waiting_to_roll(card)
+    _, info = env._observe()
+    index = next(i for i in info["legal"]
+                 if action_space.decode(i).type is not ActionType.ROLL)
+
+    env.step(index)
+    assert env.state.dev_card_played_this_turn or env.state.phase is Phase.MOVE_ROBBER
+
+
+def test_a_turn_can_be_played_through_while_holding_a_card():
+    """The end-to-end version of the bug: a Knight in hand must not stop the game."""
+    from catan.env import CatanEnv
+
+    env = CatanEnv(num_players=2)
+    _, info = env.reset(seed=4)
+    while env.state.in_setup:
+        _, _, _, _, info = env.step(info["legal"][0])
+
+    env.state.dev_cards[1][DevCard.KNIGHT] = 1
+    env.state.dev_cards[2][DevCard.KNIGHT] = 1
+
+    start = env.state.turn_number
+    for _ in range(400):
+        if info["done"]:
+            break
+        # never play a development card, exactly as a human might choose
+        choices = [i for i in info["legal"]
+                   if action_space.decode(i).type not in
+                   {ActionType.PLAY_KNIGHT, ActionType.PLAY_ROAD_BUILDING,
+                    ActionType.PLAY_YEAR_OF_PLENTY, ActionType.PLAY_MONOPOLY}]
+        assert choices, f"only card plays were legal in {info['phase']}"
+        _, _, _, _, info = env.step(choices[0])
+
+    assert env.state.turn_number > start + 3, "the game did not progress"
+    assert env.state.dev_cards[1][DevCard.KNIGHT] == 1, "the Knight was forced out"

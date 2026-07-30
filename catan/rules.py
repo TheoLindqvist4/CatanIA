@@ -37,6 +37,7 @@ from catan.actions import (
     play_monopoly,
     play_road_building,
     play_year_of_plenty,
+    roll,
     trade_with_bank,
 )
 from catan.board import GENERIC_HARBOUR, ROBBER_ROLL
@@ -514,9 +515,17 @@ def legal_actions(state):
 
     if state.phase is Phase.ROLL:
         # A development card may be played *before* rolling — most usefully a Knight, to
-        # block a tile before it produces. The driver still calls roll_dice() to roll;
-        # this list is what may be done first, and is usually empty.
-        return dev_card_actions(state, player)
+        # block a tile before it produces.
+        #
+        # Playing one is **optional**, so whenever a card is available the choice to
+        # decline has to be available too. Without it, a player holding a Knight is forced
+        # to play it every turn, which is not the game.
+        #
+        # When no card can be played there is no decision at all, and the list stays empty
+        # so the environment rolls by itself rather than asking for a click that has only
+        # one answer.
+        cards = dev_card_actions(state, player)
+        return cards + [roll()] if cards else []
 
     if state.phase is Phase.BUILD:
         actions = [end_turn()]
@@ -593,10 +602,12 @@ def apply(state, action):
     elif state.phase is Phase.BUILD:
         _apply_build(state, player, action)
     elif state.phase is Phase.ROLL:
-        # Only a development card may be played before rolling.
-        if action.type not in DEV_CARD_PLAYS:
+        if action.type is ActionType.ROLL:
+            roll_dice(state)
+        elif action.type in DEV_CARD_PLAYS:
+            _apply_dev_card(state, player, action)
+        else:
             raise IllegalAction(f"must roll the dice before {action!r}")
-        _apply_dev_card(state, player, action)
     else:
         raise IllegalAction("the game is over")
 

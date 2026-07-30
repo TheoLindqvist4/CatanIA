@@ -31,7 +31,7 @@ from helpers import (
 # =========================================================================== #
 
 def test_the_space_is_a_fixed_size():
-    assert A.NUM_ACTIONS == 324
+    assert A.NUM_ACTIONS == 325
     assert len(A.ACTIONS) == A.NUM_ACTIONS
     assert len(A.INDEX) == A.NUM_ACTIONS, "duplicate actions"
 
@@ -94,7 +94,7 @@ def test_every_action_round_trips():
         assert A.decode(index) == action
 
 
-@pytest.mark.parametrize("index", [-1, 324, 999])
+@pytest.mark.parametrize("index", [-1, 325, 999])
 def test_decoding_an_out_of_range_index_raises(index):
     with pytest.raises(IndexError):
         A.decode(index)

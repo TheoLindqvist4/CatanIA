@@ -386,8 +386,23 @@ def _validate():
     # the positional blocks must be contiguous and in the order the final cat assumes
     assert _ROAD_SLICE.start == 1 and _ROAD_SLICE.stop == _SETTLEMENT_SLICE.start
     assert _SETTLEMENT_SLICE.stop == _CITY_SLICE.start
-    assert _ROBBER_SLICE.stop == action_space.NUM_ACTIONS - 28
     assert _ROBBER_SLICE.stop - _ROBBER_SLICE.start == NUM_TILES * _VICTIMS
+
+    # The final cat interleaves positional blocks with slices of `other`, so what must hold
+    # is that the non-positional indices are exactly the ones `other` is sliced into, in
+    # order. Checked by construction rather than against written-down offsets: the first
+    # version of this assertion hardcoded "28 actions after MOVE_ROBBER" and broke the
+    # moment one was appended, which is a fact about the assertion, not about the network.
+    positional = set(range(_ROAD_SLICE.start, _CITY_SLICE.stop))
+    positional |= set(range(_ROBBER_SLICE.start, _ROBBER_SLICE.stop))
+    non_positional = [i for i in range(action_space.NUM_ACTIONS) if i not in positional]
+
+    assert len(non_positional) == NUM_GLOBAL_ACTIONS
+    assert non_positional[0] == 0                                   # END_TURN
+    assert non_positional[1:21] == list(range(_CITY_SLICE.stop, _ROBBER_SLICE.start))
+    assert non_positional[21:] == list(
+        range(_ROBBER_SLICE.stop, action_space.NUM_ACTIONS)
+    )
 
     # BUILD_ROAD/SETTLEMENT/CITY must run 1..n in id order, or a head lands on the wrong place
     for i, position in enumerate(range(1, NUM_ROADS + 1)):

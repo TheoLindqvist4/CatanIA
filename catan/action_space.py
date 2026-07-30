@@ -39,6 +39,7 @@ that can disagree. :func:`legal_mask` translates; it does not decide.
 
 from catan import rules
 from catan.actions import (
+    roll,
     Action,
     ActionType,
     build_city,
@@ -91,6 +92,9 @@ def _build():
           for second in range(first, NUM_RESOURCES)]),
         (ActionType.PLAY_MONOPOLY,
          [play_monopoly(resource) for resource in range(NUM_RESOURCES)]),
+        # Appended deliberately: every index above keeps the value it had before ROLL
+        # existed, so anything that recorded one still means the same move.
+        (ActionType.ROLL, [roll()]),
     ]
 
     actions, spans, start = [], {}, 0

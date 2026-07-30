@@ -54,6 +54,7 @@ class ActionType(IntEnum):
     PLAY_ROAD_BUILDING = 9
     PLAY_YEAR_OF_PLENTY = 10
     PLAY_MONOPOLY = 11
+    ROLL = 12
 
 
 #: Playing one of these consumes the turn's single development card.
@@ -120,6 +121,17 @@ def _enum_name(enum_type, value):
 
 def end_turn():
     return Action(ActionType.END_TURN)
+
+
+def roll():
+    """Roll the dice, declining to play a development card first.
+
+    Only offered when a card *could* have been played — see
+    :func:`catan.rules.legal_actions`. Playing one before the roll is optional, and without
+    an action meaning "no thank you" a player holding a Knight would be forced to burn it
+    every single turn.
+    """
+    return Action(ActionType.ROLL)
 
 
 def build_road(road):

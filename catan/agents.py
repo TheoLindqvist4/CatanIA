@@ -36,6 +36,10 @@ GREEDY_PRIORITY = (
     ActionType.MOVE_ROBBER,
     ActionType.DISCARD,
     ActionType.TRADE_WITH_BANK,
+    # Below every card play, so the baseline still plays a development card before rolling
+    # when it holds one — the behaviour it had when that was the only legal move, which
+    # keeps every win rate already recorded against it comparable.
+    ActionType.ROLL,
     ActionType.END_TURN,
 )
 

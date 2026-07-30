@@ -69,6 +69,8 @@ def _register_learned():
         agent = PolicyAgent.load(LEARNED_CHECKPOINT)
         if agent.net.obs_size != encoder.SIZE:
             return                                # trained on a different observation
+        if agent.net.num_actions != action_space.NUM_ACTIONS:
+            return                                # trained on a different action space
     except Exception:
         return                                    # unreadable or from another version
 
@@ -101,6 +103,7 @@ DEV_CARD_NAMES = [card.name.lower() for card in DevCard]
 
 #: Action types chosen from a panel rather than by clicking the board.
 PANEL_TYPES = (
+    ActionType.ROLL,
     ActionType.END_TURN,
     ActionType.BUY_DEV_CARD,
     ActionType.PLAY_KNIGHT,
@@ -296,7 +299,8 @@ def _hint(state, info, your_turn):
         Phase.DISCARD: "A 7 was rolled. Discard a card.",
         Phase.MOVE_ROBBER: "Move the robber — click a tile.",
         Phase.BUILD: "Build, trade, or end your turn.",
-        Phase.ROLL: "Play a development card, or roll.",
+        # Only reachable when a card *could* be played; playing it is optional.
+        Phase.ROLL: "You may play a development card first — or just roll.",
     }.get(state.phase, "Your move.")
 
 
@@ -399,11 +403,15 @@ def _actions(state, info, your_turn):
                 "type": kind.name,
                 "label": _panel_label(kind, position, extra),
             })
-    panel.sort(key=lambda item: (item["type"] != "END_TURN", item["label"]))
+    panel.sort(key=lambda item: (item["type"] not in ("ROLL", "END_TURN"), item["label"]))
     return {"board": board, "panel": panel}
 
 
 def _panel_label(kind, position, extra):
+    if kind is ActionType.ROLL:
+        # Only ever offered when a development card could be played first, so the label
+        # says what declining means rather than just "roll".
+        return "Roll the dice (keep your cards)"
     if kind is ActionType.END_TURN:
         return "End turn"
     if kind is ActionType.BUY_DEV_CARD:
