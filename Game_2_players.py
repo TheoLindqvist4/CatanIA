@@ -1,21 +1,63 @@
+"""Two-player game driver.
+
+.. deprecated::
+   Superseded by :mod:`catan.rules` + :class:`catan.state.GameState`. Kept only so the
+   legacy terminal demo keeps working; it is deleted when ``interfaces/cli.py`` lands in
+   Phase 4. Do not add to it — new rules go in :mod:`catan.rules`.
+
+Still transitional: Phase 1 splits this into a pure ``rules.py`` (``legal_actions`` /
+``apply``) plus a ``GameState``, and moves every ``print``/``input`` into
+``interfaces/cli.py``. What Phase 0 changed here:
+
+* ``player_order`` and ``turn_number`` were *class* attributes, so ``random.shuffle``
+  mutated state shared by every game instance in the process — fatal for parallel
+  self-play. They are now per-instance.
+* Constructing a game no longer *plays* one, and importing this module no longer runs
+  a game. The old hardcoded script lives in :meth:`demo`.
+* Randomness comes from one injected, seedable generator.
+* Legal-move enumeration returns sorted lists, so rollouts are reproducible.
+
+Still outstanding, by design (see ROADMAP.md): building costs no resources, and
+``place_road``/``place_settlement`` do not check connectivity.
+"""
+
+import random
+
 from Board import Board
 from Deck import Deck
 from Dice import Dice
 from Player import Player
-import random
+from catan.topology import ROAD_VERTICES
+
 
 class Game_2_players:
-    player_order = [1, 2]
-    turn_number = 0
-    
-    def __init__(self):
-        self.game()
-        
-    
-    def randomize_order(self):
-        random.shuffle(self.player_order)
+    def __init__(self, seed=None, rng=None):
+        """
+        Args:
+            seed: seed for a fresh generator. Use this for reproducible games.
+            rng: an existing ``random.Random`` to share instead.
+        """
+        self.rng = rng if rng is not None else random.Random(seed)
 
-    # PLACING SETTLEMENTS AND ROADS
+        self.player_order = [1, 2]
+        self.turn_number = 0
+
+        self.players = {
+            1: Player(),
+            2: Player(),
+        }
+        self.board = Board(rng=self.rng)
+        self.deck = Deck()
+        self.dice_1 = Dice(rng=self.rng)
+        self.dice_2 = Dice(rng=self.rng)
+
+    def randomize_order(self):
+        self.rng.shuffle(self.player_order)
+        return list(self.player_order)
+
+    # ------------------------------------------------------------------ #
+    # PLACING SETTLEMENTS AND ROADS                                      #
+    # ------------------------------------------------------------------ #
 
     def place_settlement(self, player_number, position):
         player = self.players[player_number]
@@ -32,221 +74,112 @@ class Game_2_players:
         player.player_settlement_position.add(position)
 
         return f"Settlement placed at position {position}."
-    
+
     def place_road(self, player_number, position):
         player = self.players[player_number]
 
         if player.player_roads <= 0:
             return "You do not have any more roads."
 
-        # Validate road placement
         is_valid, message = self.check_if_position_road_is_valid(position)
         if not is_valid:
             return message
 
-        # Place the road
         player.player_roads -= 1
         self.board.delete_road_position(position)
         player.player_road_position.add(position)
 
         return f"Road placed at position {position}."
 
-    # CHECKING IF THE POSITION IS VALID
-        
+    # ------------------------------------------------------------------ #
+    # CHECKING IF THE POSITION IS VALID                                  #
+    # ------------------------------------------------------------------ #
+
     def check_if_position_settlement_is_valid(self, position):
         if position not in self.board.settlement_positions:
             return False, "You cannot put a settlement in this position."
-
         return True, "Valid position for settlement."
 
-
-    def check_if_position_road_is_valid(self,position):
+    def check_if_position_road_is_valid(self, position):
         if position not in self.board.road_positions:
             return False, "You cannot put a road in this position."
-
         return True, "Valid position for road."
 
-    
     def check_valid_settlement_once_game_has_begun(self, player):
-        all_road_positions = self.players[player].player_road_position
-        valid_settlement_positions = []
+        """Vertices at the end of one of ``player``'s roads that are still buildable."""
+        valid_settlement_positions = set()
 
-        for road_position in all_road_positions:
-            adjacent_settlements = self.board.get_adjacent_settlement_from_road(road_position)
-            if adjacent_settlements is None:
-                continue
-
-            for settlement_position in adjacent_settlements:
+        for road_position in self.players[player].player_road_position:
+            for settlement_position in self.board.get_adjacent_settlement_from_road(road_position):
                 is_valid, _ = self.check_if_position_settlement_is_valid(settlement_position)
                 if is_valid:
-                    valid_settlement_positions.append(settlement_position)
+                    valid_settlement_positions.add(settlement_position)
 
-        valid_settlement_positions = list(set(valid_settlement_positions))
-        return valid_settlement_positions or []
-
+        return sorted(valid_settlement_positions)
 
     def check_valid_road_once_game_has_begun(self, player):
-        all_road_positions = self.players[player].player_road_position
-        valid_road_positions = []
+        """Roads adjacent to one of ``player``'s roads that are still buildable."""
+        valid_road_positions = set()
 
-        for road_position in all_road_positions:
-            adjacent_roads = self.board.get_adjacent_roads_from_road(road_position)
-            if adjacent_roads is None:
-                continue
-
-            for road_position in adjacent_roads:
-                is_valid, _ = self.check_if_position_road_is_valid(road_position)
+        for road_position in self.players[player].player_road_position:
+            for candidate in self.board.get_adjacent_roads_from_road(road_position):
+                is_valid, _ = self.check_if_position_road_is_valid(candidate)
                 if is_valid:
-                    valid_road_positions.append(road_position)
+                    valid_road_positions.add(candidate)
 
-        valid_road_positions = list(set(valid_road_positions))
-        return valid_road_positions or []
+        return sorted(valid_road_positions)
 
-    # FIRST TURN OF THE GAME, PLACING THE SETTLEMENTS
+    # ------------------------------------------------------------------ #
+    # FIRST TURN OF THE GAME, PLACING THE SETTLEMENTS                    #
+    # ------------------------------------------------------------------ #
+
+    def _place_starting_pair(self, player_num):
+        """Prompt ``player_num`` for one settlement and an adjoining road."""
+        while True:
+            print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
+            print("Available settlements:", self.board.get_available_settlements())
+
+            position = self.get_user_number()
+            settlement_message = self.place_settlement(player_num, position)
+            print(settlement_message)
+            if "Settlement placed" not in settlement_message:
+                continue
+            print(f"you have now a total of= {self.players[player_num].player_settlement} settlements")
+
+            print(f"PLAYER {player_num}, PLEASE CHOOSE A ROAD POSITION ON THE BOARD:")
+            available_roads = self.board.get_available_road_from_settlement(position)
+            print("Available roads:", available_roads)
+
+            # Loop until the road is genuinely placed. This used to break out
+            # unconditionally, so a rejected choice cost the player their road.
+            while True:
+                road_position = self.get_user_number()
+                if road_position not in available_roads:
+                    print("Invalid choice. Please choose a valid road position from the list:",
+                          available_roads)
+                    continue
+                road_message = self.place_road(player_num, road_position)
+                print(road_message)
+                if "Road placed" in road_message:
+                    print("")
+                    return
 
     def placing_first_settlement(self):
-        for player_num in self.player_order:  # Normal player order
-            placed = False  # Ensure only one settlement is placed
-
-            while not placed:
-                print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
-                available_settlements = self.board.get_available_settlements()
-                print("Available settlements:", available_settlements)
-
-                position = self.get_user_number()
-                settlement_message = self.place_settlement(player_num, position)
-                print(settlement_message)
-                print(f"you have now a total of= {self.players[player_num].player_settlement} settlements")
-
-
-                if "Settlement placed" in settlement_message:
-                    placed = True  # Stop the settlement loop after one successful placement
-                    
-                    print(f"PLAYER {player_num}, PLEASE CHOOSE A ROAD POSITION ON THE BOARD:")
-                    available_roads = self.board.get_available_road_from_settlement(position)
-                    print("Available roads:", available_roads)
-
-                    while True:
-                        road_position = self.get_user_number()
-                        if road_position in available_roads:
-                            road_message = self.place_road(player_num, road_position)
-                            print(road_message)
-                            print("")
-                            break
-                        else:
-                            print("Invalid choice. Please choose a valid road position from the list:", available_roads)
-
-            print("")  # Space between players for readability
-
-
-
-    def placing_second_settlement(self):
-        for player_num in reversed(self.player_order):  # Reverse the player order
-            placed = False  # Ensure only one settlement is placed
-
-            while not placed:
-                print(f"PLAYER {player_num}, PLEASE CHOOSE A SETTLEMENT POSITION ON THE BOARD:")
-                available_settlements = self.board.get_available_settlements()
-                print("Available settlements:", available_settlements)
-                position = self.get_user_number()
-                settlement_message = self.place_settlement(player_num, position)
-                print(settlement_message)
-
-                if "Settlement placed" in settlement_message:
-                    placed = True  # Stop the settlement loop after one successful placement
-                    
-                    print(f"PLAYER {player_num}, PLEASE CHOOSE A ROAD POSITION ON THE BOARD:")
-                    available_roads = self.board.get_available_road_from_settlement(position)
-                    print("Available roads:", available_roads)
-
-                    while True:
-                        road_position = self.get_user_number()
-                        if road_position in available_roads:
-                            road_message = self.place_road(player_num, road_position)
-                            print(road_message)
-                            print("")
-                            break
-                        else:
-                            print("Invalid choice. Please choose a valid road position from the list:", available_roads)
+        for player_num in self.player_order:
+            self._place_starting_pair(player_num)
             print("")
 
-
+    def placing_second_settlement(self):
+        for player_num in reversed(self.player_order):
+            self._place_starting_pair(player_num)
+            print("")
 
     def print_order(self):
         print("Player turn order:", self.player_order)
-        return
-    
 
-    def game(self):
-        # Create player instances
-        self.players = {
-            1: Player(),
-            2: Player(),
-        }
-        self.board = Board()
-        self.dice_1 = Dice()
-        self.dice_2 = Dice()
-        # self.randomize_order()
-        # self.print_order() 
-        # self.placing_first_settlement()  
-        # self.placing_second_settlement()
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-        # self.turn(self.turn_number)
-
-
-        self.place_road(1,11)
-        self.place_road(1,12)
-        self.place_road(1,20)
-        self.place_road(1,26)
-        self.place_road(1,25)
-        self.place_road(1,19)
-        self.place_road(1,27)
-        self.place_road(1,7)
-
-        
-
-
-        self.place_road(2,3)
-        self.place_road(2,16)
-
-        valid_positions = self.check_valid_settlement_once_game_has_begun(1)    
-        print(f"Player 1 has {valid_positions} valid positions")
-        valid_positions = self.check_valid_settlement_once_game_has_begun(2)
-        print(f"Player 2 has {valid_positions} valid positions")
-    
-        valid_road_positions = self.check_valid_road_once_game_has_begun(1)    
-        print(f"Player 1 has {valid_road_positions} valid road positions")
-        valid_road_positions = self.check_valid_road_once_game_has_begun(2)
-        print(f"Player 2 has {valid_road_positions} valid road positions")
-
-
-
-        print("")
-        print(f"Player 1 roads: {self.players[1].get_player_road_positions()}")
-        longest_road = self.find_longest_path(1)
-        print(f"Player 1 has a max length road of: {longest_road}")
-
-        print(f"Player 2 roads: {self.players[2].get_player_road_positions()}")
-        longest_road = self.find_longest_path(2)
-        print(f"Player 2 has a max length road of: {longest_road}")
-
-        return    
-
-
+    # ------------------------------------------------------------------ #
+    # TURNS                                                              #
+    # ------------------------------------------------------------------ #
 
     def turn(self, turn_number):
         players_turn = self.whos_turn_is_it(turn_number)
@@ -258,180 +191,118 @@ class Game_2_players:
         self.give_cards_to_players(total_dice)
         print(f"The total of the dice is: {total_dice}")
 
-        can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards = self.players[players_turn].check_player_actions()
-        
-        if can_build_road:
-            print("You can build a road")
-        else:
-            print("You cannot build a road")
-        
-        if can_build_settlement:
-            print("You can build a settlement")
-        else:
-            print("You cannot build a settlement")
-        
-        if can_build_city:
-            print("You can build a city")
-        else:
-            print("You cannot build a city")
-        
-        if can_buy_dev_cards:
-            print("You can buy development cards")
-        else:
-            print("You cannot buy development cards")
-        
+        can_build_road, can_build_settlement, can_build_city, can_buy_dev_cards = \
+            self.players[players_turn].check_player_actions()
+
+        for label, allowed in (
+            ("build a road", can_build_road),
+            ("build a settlement", can_build_settlement),
+            ("build a city", can_build_city),
+            ("buy development cards", can_buy_dev_cards),
+        ):
+            print(f"You {'can' if allowed else 'cannot'} {label}")
+
         self.turn_number += 1
-        return
 
     def whos_turn_is_it(self, turn_number):
-        if turn_number % 2 == 0:
-            return self.player_order[0]
-        else:
-            return self.player_order[1]
-        
+        return self.player_order[turn_number % len(self.player_order)]
+
     def give_cards_to_players(self, dice_number):
-        # Get the positions where the dice_number is present
-        positions = self.board.get_positions_by_dice(dice_number)
-        
-        # Iterate through all the players
+        """Pay out production for ``dice_number``.
+
+        The board already excludes the desert from its payout index, so a 7 pays
+        nobody without a special case here.
+
+        Phase 1: cities are ignored (``player_city_position`` is never read, so a city
+        would produce nothing), and the bank is unbounded.
+        """
+        producers = self.board.producers_for(dice_number)
+
         for player_number, player in self.players.items():
-            # Check if the player has a settlement in any of the matching positions
-            for position, tiles in positions.items():
-                if position in player.player_settlement_position:
-                    # Iterate through the tiles in the position
-                    for tile in tiles:
-                        for resource_value, resource in tile.items():
-                            # Only give the resource if the dice number matches the resource value
-                            if resource_value == dice_number:
-                                # Skip Desert resources
-                                if resource == 'Desert':
-                                    continue
-                                
-                                # Add the appropriate resource to the player's resources
-                                player.player_ressources[resource] += 1
-                                print(f"Player {player_number} receives 1 {resource} for settlement at position {position}")
+            for position, productions in producers.items():
+                if position not in player.player_settlement_position:
+                    continue
+                for production in productions:
+                    player.player_ressources[production.resource] += 1
+                    print(f"Player {player_number} receives 1 {production.resource} "
+                          f"for settlement at position {position}")
 
-        return
-
-
-    ###############################################################################
-     ###############################################################################
-      ###############################################################################
-       ###############################################################################
-
+    # ------------------------------------------------------------------ #
+    # LONGEST ROAD                                                       #
+    # ------------------------------------------------------------------ #
 
     def find_longest_path(self, player_number):
-        """
-        Finds the longest road (number of road segments) for the given player,
-        taking branching into account (only one branch counts at an intersection).
-        
-        The method does the following:
-        1. For each road owned by the player, “infer” its two endpoints (intersections)
-            by grouping its adjacent roads into clusters that are mutually adjacent.
-        2. Build an undirected graph where each unique intersection is a node and 
-            each player road (edge) connects its two intersections.
-        3. Run a DFS on this graph (avoiding reusing roads) to find the longest path.
-        
-        Args:
-            player_number (int): The player's number whose longest road is calculated.
-            
-        Returns:
-            int: The length (number of road segments) of the longest road.
+        """Longest chain of ``player_number``'s roads, ignoring branches.
+
+        **Strict simple path**: a route may not pass through the same intersection
+        twice. Settled in ``docs/decisions/0006-longest-road-intersection-reuse.md``.
+        For ``{7, 11, 12, 19, 20, 25, 26, 27}`` this gives 6; the earlier
+        roads-only version gave 7 by passing through vertex 8 three times.
+
+        This module has no ownership information, so it cannot apply the rule that an
+        opponent's building breaks a road. :func:`catan.rules.longest_road_length`
+        implements both and is the version that counts.
         """
         player_roads = self.players[player_number].get_player_road_positions()
-        
-        def get_intersections_for_road(road):
-            """
-            Given a road, use its list of adjacent roads (from the board’s mapping)
-            to “cluster” them into groups that are all mutually adjacent. Each cluster
-            represents the other roads that share one intersection with this road.
-            
-            For example, if road 7 has adjacent roads [1, 11, 12] and 11 and 12 are adjacent,
-            then the clusters are [{1}, {11, 12}]. We then define the two endpoints (intersections)
-            for road 7 as:
-                - frozenset({7} ∪ {1})       i.e. frozenset({1, 7})
-                - frozenset({7} ∪ {11, 12})   i.e. frozenset({7, 11, 12})
-            """
-            nbrs = self.board.get_adjacent_roads_from_road(road)
-            clusters = []
-            for n in nbrs:
-                placed = False
-                for cluster in clusters:
-                    # If n is adjacent to every road already in the cluster,
-                    # then it belongs in that cluster.
-                    if all(n in self.board.get_adjacent_roads_from_road(other) for other in cluster):
-                        cluster.add(n)
-                        placed = True
-                        break
-                if not placed:
-                    clusters.append({n})
-            # Every road has two endpoints. If we found only one cluster, use an empty cluster
-            # for the other endpoint.
-            if len(clusters) == 1:
-                clusters.append(set())
-            # Define each endpoint as the union of the road itself with one cluster.
-            ep1 = frozenset({road} | clusters[0])
-            ep2 = frozenset({road} | clusters[1])
-            return (ep1, ep2)
-        
-        # Compute endpoints for each road.
-        road_endpoints = {}
-        for road in player_roads:
-            road_endpoints[road] = get_intersections_for_road(road)
-        
-        # Build a graph: keys are intersections (nodes), values are lists of tuples
-        # (neighbor_intersection, road) representing an edge.
+
         graph = {}
-        for road, (ep1, ep2) in road_endpoints.items():
-            for ep in (ep1, ep2):
-                if ep not in graph:
-                    graph[ep] = []
-            # Add the bidirectional edge (annotated with the road number so we avoid reusing it)
-            graph[ep1].append((ep2, road))
-            graph[ep2].append((ep1, road))
-        
-        # Now perform DFS to find the longest simple path (by counting edges)
-        longest = 0
-        def dfs(intersection, used_roads):
-            max_length = 0
-            for neighbor, road in graph.get(intersection, []):
-                if road in used_roads:
+        for road in player_roads:
+            u, v = ROAD_VERTICES[road]
+            graph.setdefault(u, []).append((v, road))
+            graph.setdefault(v, []).append((u, road))
+
+        def dfs(intersection, used_roads, visited):
+            longest_here = 0
+            for neighbour, road in graph[intersection]:
+                if road in used_roads or neighbour in visited:
                     continue
                 used_roads.add(road)
-                path_length = 1 + dfs(neighbor, used_roads)
-                max_length = max(max_length, path_length)
-                used_roads.remove(road)
-            return max_length
-        
-        for intersection in graph:
-            longest = max(longest, dfs(intersection, set()))
-        return longest
+                visited.add(neighbour)
+                longest_here = max(longest_here, 1 + dfs(neighbour, used_roads, visited))
+                visited.discard(neighbour)
+                used_roads.discard(road)
+            return longest_here
 
+        return max(
+            (dfs(start, set(), {start}) for start in graph),
+            default=0,
+        )
 
+    # ------------------------------------------------------------------ #
+    # DEMO / CLI                                                         #
+    # ------------------------------------------------------------------ #
 
-     ###############################################################################
-      ###############################################################################
-       ###############################################################################
-        ###############################################################################
-
-
-        
-
-
-    # ASK IN THE TERMINAL FOR THE NUMBER OF THE POSITION
-    
     @staticmethod
     def get_user_number():
         while True:
             try:
-                number = int(input("Enter a number: "))
-                return number
+                return int(input("Enter a number: "))
             except ValueError:
                 print("Invalid input. Please enter a valid number.")
 
+    def demo(self):
+        """The old hardcoded smoke script, kept runnable but off the import path."""
+        print(self.board.display_board())
+        print("")
+
+        for road in (11, 12, 20, 26, 25, 19, 27, 7):
+            self.place_road(1, road)
+        for road in (3, 16):
+            self.place_road(2, road)
+
+        for player in (1, 2):
+            print(f"Player {player} has "
+                  f"{self.check_valid_settlement_once_game_has_begun(player)} valid positions")
+        for player in (1, 2):
+            print(f"Player {player} has "
+                  f"{self.check_valid_road_once_game_has_begun(player)} valid road positions")
+
+        print("")
+        for player in (1, 2):
+            roads = sorted(self.players[player].get_player_road_positions())
+            print(f"Player {player} roads: {roads}")
+            print(f"Player {player} has a max length road of: {self.find_longest_path(player)}")
 
 
-
-
-
-game = Game_2_players()
+if __name__ == "__main__":
+    Game_2_players(seed=0).demo()
