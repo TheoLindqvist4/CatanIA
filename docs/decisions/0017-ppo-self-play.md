@@ -93,21 +93,49 @@ environments, iteration time went from 88s to ~10s.
 
 ## Measured
 
-From scratch, 8,192 transitions/iteration, 200-game evaluations against
-`HeuristicAgent(noise=0)`:
+**From scratch**, 8,192 transitions/iteration, 200-game evaluations against
+`HeuristicAgent(noise=0)`: 0.5% → 11.0% → 19.5% → 29.4% → 31.4% → **37.2%** over 2.7M
+transitions (~70 minutes). Real, steady learning that plateaus below the heuristic.
 
-| iteration | steps | vs heuristic |
-|---|---|---|
-| 0 | 8k | 0.5% |
-| 20 | 172k | 11.0% |
-| 60 | 500k | 19.5% |
-| 140 | 1.2M | 29.4% |
-| 260 | 2.2M | 31.4% |
-| 320 | 2.7M | 37.2% |
+**Cloned first, then fine-tuned** ([0018](0018-clone-before-self-play.md)) — 3.33M
+transitions, 68 minutes, `lr 1e-4`, `entropy 5e-3`:
 
-Real, steady learning that plateaus well below the heuristic. Diagnostics stayed healthy
-throughout — explained variance 0.76–0.79, KL 0.014–0.022 against a 0.03 guard, entropy
-falling 1.99 → 1.15, mean episode length 148 → 91 (it wins games rather than stalling them).
+| iteration | vs heuristic |
+|---|---|
+| 0 (the clone) | 27.8% |
+| 19 | 21.9% |
+| 39 | 31.6% |
+| 79 | 38.9% |
+| 99 | 45.0% |
+| 179 | 49.0% |
+| 199 | 54.4% |
+| 299 | 55.8% |
+
+The final policy, on **1,000 games** (±3.1 points — 200 games gives ±7, which cannot tell
+parity from an edge):
+
+| opponent | result | rate | 95% CI |
+|---|---|---|---|
+| heuristic (`hard`) | 507 – 467 | **52.1%** | [48.9, 55.2] |
+| heuristic (`medium`) | 299 – 97 | 75.5% | [71.0, 79.5] |
+| heuristic (`easy`) | 341 – 57 | 85.7% | [81.9, 88.8] |
+| greedy | 399 – 1 | 99.8% | [98.6, 100.0] |
+| random | 399 – 1 | 99.8% | [98.6, 100.0] |
+
+**Read this honestly: the interval includes 50%, so it is parity, not a win.** The 55.8%
+seen during training was noise on top of ~52%. Against everything *below* the heuristic it is
+clearly stronger — 99.8% versus greedy where the heuristic itself scores 96.7% — but it has
+not demonstrated an edge over the thing it was cloned from.
+
+Diagnostics stayed healthy throughout: explained variance 0.62–0.79, KL 0.014–0.028 against a
+0.03 guard, and truncations falling from 20 per 200 games to 1 — it learned to *finish*, which
+is most of what separates 30% from 50%.
+
+**The first hundred iterations looked like a failure.** 27.8% → 21.9% → 31.6% → 31.1% reads
+as PPO destroying what cloning learned, and the temptation to intervene was real. The
+confidence intervals overlapped the whole time. Fine-tuning needed ~100 iterations to work
+through the disruption before it passed the from-scratch run; stopping early would have thrown
+away the entire result.
 
 ## What it does not learn
 

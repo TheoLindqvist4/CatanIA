@@ -261,10 +261,19 @@ dérouler ; ici `clone()` copie la pioche de développement, le paquet de dés e
 l'adversaire *à l'identique*, donc une simulation rejoue le même futur au lieu d'en
 échantillonner un. L'échantillonnage de croyances est un prérequis, et il n'est pas écrit.
 
-**Ce qui est mesuré.** Depuis zéro : 0.5% → 11% → 19.5% → 29.4% → 37.2% contre
-`HeuristicAgent(noise=0)` sur 2.7 M transitions. Par clonage : **30.8% en quatre minutes** —
-autant que soixante-dix minutes d'auto-apprentissage. L'agent entraîné **ne bat pas encore
-l'heuristique** ; `hard` reste donc l'adversaire par défaut.
+**Ce qui est mesuré.** Le clonage atteint 30.8% contre l'heuristique en quatre minutes ;
+l'affinage par PPO monte ensuite à la parité en 68 minutes de CPU. Sur 1 000 parties :
+
+| adversaire | résultat | taux | IC 95% |
+|---|---|---|---|
+| heuristique `hard` | 507 – 467 | **52.1%** | [48.9, 55.2] |
+| heuristique `medium` | 299 – 97 | 75.5% | [71.0, 79.5] |
+| `greedy` | 399 – 1 | 99.8% | [98.6, 100.0] |
+| `random` | 399 – 1 | 99.8% | [98.6, 100.0] |
+
+L'intervalle contient 50% : c'est donc une **parité**, pas une victoire démontrée. Contre tout
+ce qui est plus faible, l'agent entraîné domine nettement — 99.8% contre `greedy`, là où
+l'heuristique elle-même fait 96.7%. `hard` reste l'adversaire par défaut.
 
 Détails et limites : [décision 0017](docs/decisions/0017-ppo-self-play.md),
 [décision 0018](docs/decisions/0018-clone-before-self-play.md).

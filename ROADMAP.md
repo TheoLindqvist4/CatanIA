@@ -472,14 +472,26 @@ beat random" but "can it beat 96.7%-against-greedy".
 - [x] **The encoder was 57% of training time.** The board-static ~40% of an observation is now
       computed once per `Board`; verified bit-identical over 3,200 encodings.
       See [decision 0019](docs/decisions/0019-cache-the-board-static-observation.md).
-- [x] **Measured honestly.** From scratch: 0.5% → 11% → 19.5% → 29.4% → 37.2% against
-      `HeuristicAgent(noise=0)` over 2.7M transitions. Cloned: 30.8% in four minutes.
+- [x] **Measured honestly**, on 1,000 games (±3.1 points):
+
+      vs heuristic hard      507-467   52.1%  [48.9, 55.2]
+      vs heuristic medium    299- 97   75.5%  [71.0, 79.5]
+      vs heuristic easy      341- 57   85.7%  [81.9, 88.8]
+      vs greedy              399-  1   99.8%  [98.6, 100.0]
+      vs random              399-  1   99.8%  [98.6, 100.0]
 
 ### Where it stands
 
-The pipeline is correct and the learning is real, but **the trained policy does not yet beat
-the heuristic**, so `hard` remains the default opponent. A checkpoint is offered as `learned`
-in both interfaces only when `checkpoints/policy.pt` exists.
+The learned policy reached **parity with the heuristic** — 52.1%, and the interval includes
+50%, so it is not a demonstrated win. Against everything weaker it is clearly stronger: 99.8%
+against greedy, where the heuristic itself scores 96.7%.
+
+`hard` stays the default opponent, because parity is not an improvement and the heuristic is
+cheaper and easier to reason about. The policy is offered as `learned` in both interfaces
+whenever `checkpoints/policy.pt` exists.
+
+Getting there took 68 minutes of CPU: cloning to 30.8% in four, then fine-tuning. From-scratch
+self-play over a comparable budget reached 37.2%.
 
 ### What is actually in the way
 
