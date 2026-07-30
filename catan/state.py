@@ -154,6 +154,11 @@ class GameState:
         self.largest_army_holder = None
         self.longest_road_holder = None
 
+        #: What has happened. The rules **append only**; clearing is the caller's job,
+        #: because one env step can both apply an action and roll the dice, and whichever
+        #: cleared would erase the other's events. See :mod:`catan.events`.
+        self.events = []
+
         # Memo for longest road, keyed on the ownership arrays themselves rather than
         # invalidated by hand — see rules.longest_road_lengths. Derived, so it takes no
         # part in equality.
@@ -312,6 +317,10 @@ class GameState:
         other.turn_number = self.turn_number
         other.last_roll = self.last_roll
         other.winner = self.winner
+
+        # A clone starts with no story of its own; events describe a transition, not a
+        # position, so copying them would attribute one state's history to another.
+        other.events = []
 
         # Safe to carry: the key is derived from the arrays that were just copied, so it
         # matches until one of them changes, and then it simply misses.

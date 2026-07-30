@@ -1,0 +1,102 @@
+/* Plain and functional. Making it pretty comes later. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #14171c;
+  color: #e8e8ea;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 10px 16px;
+  background: #1b1f26;
+  border-bottom: 1px solid #2c323c;
+}
+
+h1 { margin: 0; font-size: 17px; letter-spacing: 0.5px; }
+h2 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase;
+     letter-spacing: 0.7px; color: #8b93a1; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.controls label { display: flex; gap: 5px; align-items: center; color: #9aa3b2; }
+
+select, input, button {
+  font: inherit;
+  background: #262c36;
+  color: #e8e8ea;
+  border: 1px solid #39414e;
+  border-radius: 5px;
+  padding: 5px 9px;
+}
+input { width: 92px; }
+button { cursor: pointer; }
+button:hover { background: #313947; }
+button.active { background: #3b6fd4; border-color: #3b6fd4; }
+button.primary { background: #2f6f4a; border-color: #2f6f4a; }
+button.primary:hover { background: #3a8659; }
+
+main {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.board-pane { flex: 1 1 620px; min-width: 340px; }
+.side { flex: 0 1 320px; min-width: 280px; display: flex; flex-direction: column; gap: 12px; }
+
+.hint {
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: #1b1f26;
+  border: 1px solid #2c323c;
+  border-left: 3px solid #3b6fd4;
+  border-radius: 5px;
+}
+
+#board-wrap { background: #1b1f26; border: 1px solid #2c323c; border-radius: 6px; padding: 6px; }
+svg { width: 100%; height: auto; display: block; }
+
+/* the pulse is the only thing telling you where you may click */
+.target { pointer-events: none; animation: pulse 1.6s ease-in-out infinite; }
+.hit { cursor: pointer; }
+@keyframes pulse { 0%, 100% { opacity: 0.95; } 50% { opacity: 0.45; } }
+
+.dice-row { display: flex; align-items: center; gap: 12px; }
+.dice {
+  width: 58px; height: 58px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; font-weight: 700;
+  background: #f3f3f0; color: #14171c;
+  border-radius: 9px; box-shadow: 0 2px 0 #b9b9b2;
+}
+
+.panel { background: #1b1f26; border: 1px solid #2c323c; border-radius: 6px; padding: 10px 12px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.buttons + h2 { margin-top: 12px; }
+
+.player {
+  background: #1b1f26;
+  border: 1px solid #2c323c;
+  border-left: 4px solid #555;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.player.you { background: #1e2530; }
+.player-head { display: flex; justify-content: space-between; margin-bottom: 3px; }
+.badges { margin-top: 4px; color: #d8b44a; font-size: 12px; }
+
+.muted { color: #8b93a1; font-size: 12.5px; }
+
+.log-panel { max-height: 260px; overflow-y: auto; }
+#log { margin: 0; padding-left: 18px; }
+#log li { color: #9aa3b2; font-size: 12.5px; }
+#log li.mine { color: #e8e8ea; }

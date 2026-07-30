@@ -160,6 +160,60 @@ def legal_indices(state):
     return sorted(encode(action) for action in rules.legal_actions(state))
 
 
+def grouped(state):
+    """Legal actions arranged for a person to choose from.
+
+    ``{ActionType: {(position, extra): index}}`` — pick a *kind* of action, then a target.
+    An interface offers the kinds as buttons and highlights the targets on the board, which
+    is what replaces asking someone to pick from a flat list of 54.
+
+    This lives here rather than in the interface because it is the same information
+    :func:`legal_mask` carries, only shaped differently — and because in Python it can be
+    tested, which browser code cannot.
+    """
+    out = {}
+    for action in rules.legal_actions(state):
+        out.setdefault(action.type, {})[(action.position, action.extra)] = encode(action)
+    return out
+
+
+def clickable(state):
+    """Which board elements are legal targets right now, per action type.
+
+    ``{ActionType: {element_id: index}}`` for the types that name a board element — roads,
+    settlements, cities and the robber's destination. Types whose ``position`` is a resource
+    rather than a place (trades, discards, Monopoly) are left out: they are chosen from a
+    panel, not by clicking the board.
+
+    ``MOVE_ROBBER`` maps a tile to *one* index, the first by victim. A tile offering several
+    victims needs a follow-up choice, which :func:`victims_for_tile` supplies.
+    """
+    board_types = (
+        ActionType.BUILD_ROAD,
+        ActionType.BUILD_SETTLEMENT,
+        ActionType.BUILD_CITY,
+        ActionType.MOVE_ROBBER,
+    )
+    out = {kind: {} for kind in board_types}
+    for action in rules.legal_actions(state):
+        if action.type in out:
+            out[action.type].setdefault(action.position, encode(action))
+    return {kind: targets for kind, targets in out.items() if targets}
+
+
+def victims_for_tile(state, tile):
+    """``{player: index}`` for robbing each possible victim on ``tile``.
+
+    Empty if the tile is not a legal destination. A single entry keyed ``0`` means the tile
+    is legal but there is nobody to rob, so no follow-up question is needed.
+    """
+    out = {}
+    for action in rules.legal_actions(state):
+        if action.type is ActionType.MOVE_ROBBER and action.position == tile:
+            out[action.extra] = encode(action)
+    return out
+
+
 def describe(index):
     """``'073 BUILD_SETTLEMENT(1)'`` — for logs and test failures."""
     return f"{index:03d} {decode(index)!r}"

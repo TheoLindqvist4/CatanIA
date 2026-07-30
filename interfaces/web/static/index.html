@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CatanIA</title>
+  <link rel="stylesheet" href="/app/app.css">
+</head>
+<body>
+  <header>
+    <h1>CatanIA</h1>
+    <div class="controls">
+      <label>Opponent
+        <select id="opponent">
+          <option value="greedy">Greedy</option>
+          <option value="random">Random</option>
+        </select>
+      </label>
+      <label>Rules
+        <select id="rules">
+          <option value="ranked1v1">Ranked 1v1 (15 pts)</option>
+          <option value="base">Base game (10 pts)</option>
+        </select>
+      </label>
+      <label>Seed <input id="seed" type="number" placeholder="random"></label>
+      <button id="new-game">New game</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="board-pane">
+      <div id="hint" class="hint">Starting…</div>
+      <div id="board-wrap"><svg id="board" xmlns="http://www.w3.org/2000/svg"></svg></div>
+    </section>
+
+    <aside class="side">
+      <div class="dice-row">
+        <div class="dice" id="dice">–</div>
+        <div class="dice-label">
+          <div id="turn-label">turn 0</div>
+          <div id="phase-label" class="muted"></div>
+        </div>
+      </div>
+
+      <div id="players"></div>
+
+      <div class="panel">
+        <h2>Build</h2>
+        <div id="modes" class="buttons"></div>
+        <h2>Actions</h2>
+        <div id="panel" class="buttons"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Supply</h2>
+        <div id="supply" class="muted"></div>
+      </div>
+
+      <div class="panel log-panel">
+        <h2>Log</h2>
+        <ol id="log"></ol>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/app/app.js"></script>
+</body>
+</html>

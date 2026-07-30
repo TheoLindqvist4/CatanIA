@@ -87,6 +87,7 @@ class CatanEnv:
         if randomize_order:
             self.state.randomize_order()
 
+        self.state.events = []
         self._advance_to_decision()
         return self._observe()
 
@@ -113,6 +114,9 @@ class CatanEnv:
             raise RuntimeError("the game is over; call reset()")
 
         actor = self.state.current_player
+        # Events accumulate across everything this step does — the action itself, and any
+        # dice rolled on the way to the next decision.
+        self.state.events = []
         rules.apply(self.state, action_space.decode(_check_index(action)))
         self._advance_to_decision()
 
@@ -159,6 +163,7 @@ class CatanEnv:
                 p: rules.public_victory_points(state, p) for p in state.players
             },
             "winner": state.winner,
+            "events": list(state.events),
             "done": done or state.phase is Phase.GAME_OVER,
         }
         return encoder.encode(state, player), info

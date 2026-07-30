@@ -21,11 +21,11 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
 | **3** | AI surface (action space, observations, env) | ✅ **done** |
 | **4** | Interfaces (renderer, CLI) | ✅ **done** |
-| **5** | Engine support for an interface: events, undo, save | ⬜ **next** |
-| **6** | A real opponent: the heuristic agent | ⬜ |
-| **7** | The web game — play against it in a browser | ⬜ |
+| **5** | Engine support for an interface: events, click targets | ✅ **done** |
+| **6** | The web game — play against it in a browser | ✅ **done** |
+| **7** | A better opponent: the heuristic agent | ⬜ **next** |
 
-553 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+598 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -55,6 +55,10 @@ interfaces/
   render.py        # ✅ draws a GameState as a PNG, straight from the topology lattice
   cli.py           # ✅ play or watch in the terminal — the ONLY place print()/input() appear
   static/images/   # ✅ board art, vendored from FullStackCatan
+  web/
+    api.py         # ✅ the game as plain dicts — no HTTP, so it is testable
+    server.py      # ✅ a stdlib HTTP shim over api.py
+    static/        # ✅ the browser client: SVG board, click to play
 tests/
 ```
 
@@ -280,7 +284,7 @@ adding 3–4 player training or human play.
 - [ ] Scale `tests/test_selfplay.py` up to the 10k-game harness. The invariant checks are written;
       it is currently 60 games at 1,500 actions.
 
-## Phase 4 — Interfaces 🔶
+## Phase 4 — Interfaces ✅
 
 - [x] **`interfaces/render.py`** — draws a `GameState` as a PNG. The engine already knows where
       everything is: `topology` places tiles, vertices *and* roads on an integer lattice, so
@@ -316,7 +320,12 @@ board, which is the second-authority problem this engine was rebuilt to remove.
 # Playing against the AI
 
 Phases 5–7 turn the engine into a game a person actually wants to play: a **board in the browser**
-you click, against an opponent **worth beating**.
+you click, against an opponent worth beating.
+
+**Interface first, opponent second.** The web game ships against the existing `GreedyAgent` so
+the interface and the rules can be confirmed working end to end; the opponent is then improved
+without the interface changing, because an agent is only a
+`(observation, info) -> index` callable.
 
 ## What is missing, measured
 
@@ -339,43 +348,76 @@ about random than about greedy. There is no positional judgement in the project 
 
 ---
 
-## Phase 5 — Engine support for an interface ⬜
+## Phase 5 — Engine support for an interface ✅
 
-Headless and fully testable. Everything here is a prerequisite for both later phases, and none of
-it should cost the training loop anything measurable.
+Headless and fully testable. Everything here is a prerequisite for the game, and none of it cost
+the training loop anything measurable.
 
-- [ ] **An event stream.** `catan.events` with a small `Event` record — dice rolled, resources
-      produced, card stolen, robber moved, card bought, award changed, discard, win. `apply` and
-      `roll_dice` append to `state.events`, cleared at the start of each call.
-      - The engine already computes all of this and throws it away: `distribute` returns a
-        per-player payout nobody reads, and `_steal_one_card` knows exactly which card it moved.
-      - ⚠️ **Gate on measurement.** A step is ~270 µs today. If recording costs more than ~1% of
-        that, make it opt-in with a flag rather than paying it in every rollout. Decide with a
-        number, not a guess, and record it.
-- [ ] **Undo.** A bounded stack of `state.clone()` snapshots taken before each *human* action.
-      Cloning is ~2 µs, so the cost is nothing; the work is deciding what undo means when the dice
-      have been rolled in between. Proposal: undo rewinds to the start of your current decision,
-      never across a roll, so it cannot be used to re-roll.
-- [ ] **Save and load.** `GameState` to JSON and back, round-tripping to an equal state. Needed
-      for "finish this game tomorrow", and it doubles as a way to attach a real position to a bug
-      report.
-- [ ] **Action grouping metadata.** Given a legal mask, group it by `ActionType` and by the board
-      element each action targets, so a UI can offer "Build settlement" and then highlight the six
-      legal vertices. This belongs next to `action_space`, not in the UI — it is the same
-      information, shaped for a person, and it should be tested in Python.
-- [ ] **A `describe_event` helper** shared by the CLI and the web app, so the two never disagree
-      about what just happened.
+- [x] **An event stream.** `catan.events` with a small fixed-arity `Event` — rolled, produced,
+      stole, robber moved, discarded, built, traded, bought, played, monopolised, award, turn
+      ended, won. The engine already computed all of it and threw it away.
+      - **The rules only append; clearing is the caller's job.** An earlier version cleared in
+        both `apply` and `roll_dice`, and silently lost every action that happened to precede an
+        automatic roll — visible as a missing setup road in the log. `CatanEnv.step` clears once
+        and returns the lot in `info["events"]`.
+      - ✅ **Measurement gate passed.** End-to-end throughput is **3,718 steps/sec, unchanged**;
+        `update_awards` went 1.0 → 1.5 µs and nothing else moved. No opt-in flag needed.
+- [x] **Click targets.** `action_space.clickable(state)` maps each board action type to the
+      elements that are legal targets, and `grouped(state)` arranges everything by type. This
+      lives next to the action space, not in the UI: it is the same information the mask carries,
+      shaped for a person, and here it can be tested.
+- [x] **`events.describe`** shared by every interface, so none of them can disagree about what
+      just happened.
+- [ ] **Undo** — a bounded stack of `state.clone()` snapshots before each human action. Cloning is
+      ~2 µs, so the cost is nothing; the work is deciding what undo means across a dice roll.
+      Deferred: not needed to confirm the game works.
+- [ ] **Save and load** — `GameState` to JSON and back. Deferred for the same reason, though it
+      would also let a bug report carry the position it happened in.
 
-## Phase 6 — A real opponent ⬜
+## Phase 6 — The web game ✅
 
-`catan/agents.py` gains a heuristic that plays with positional judgement. All of it is testable
-headless through `play_match`, and playable through the existing CLI long before any web work —
-so the opponent can be made good and *felt* to be good before the UI exists.
+A local web app: Python serves the engine, the browser draws the board and posts clicks.
 
-- [ ] **Position evaluation.** Score a vertex by the production it actually buys:
-      Σ pip odds of its tiles, weighted for resource diversity (five resources beat three good
-      ones), plus port access, minus proximity to the opponent. The encoder already computes pip
-      potential per vertex — reuse it rather than writing a second version.
+    python -m interfaces.web        then open http://127.0.0.1:8000
+
+- [x] **The standard library, and nothing else.** A single-player local game does not need a
+      framework, and adding one would mean a dependency, an install and a version to pin for
+      something this thin. `interfaces/web/server.py` is ~150 lines of `http.server`.
+- [x] **All the thinking in `interfaces/web/api.py`**, which knows nothing about HTTP — plain
+      dicts in and out, so every decision is testable in Python. Swapping in FastAPI later
+      rewrites `server.py` and touches nothing else.
+- [x] **The server decides everything; the client renders and reports clicks.** The browser holds
+      no legality, no scoring and no board generation. The last time this project had board logic
+      in JavaScript it was a second implementation that could disagree with the engine.
+- [x] **Click to play.** The board is SVG, positioned from the same lattice `render.py` maps to
+      pixels, with the vendored art dropped in. Pick a build type, the legal targets pulse, click
+      one. Fat invisible hit-areas so a road is easy to hit.
+- [x] **Everything a player needs to see**: the dice each turn, both hands (yours in full, the
+      opponent's as a count), development cards, knights, longest road, pieces left, the bank, the
+      dev deck, the robber, harbours, whose turn it is, and what is being asked of you.
+- [x] **A running log** — every roll, payout, theft, trade, purchase and award, in plain English
+      from `events.describe`, so the opponent's turn is readable rather than a board that changed
+      while you watched.
+- [x] **Hidden information filtered server-side**, in one function. `tests/test_web.py` walks a
+      whole game asserting no response ever carries the opponent's hand, their development cards
+      or either deck — the same leak detectors the encoder has, applied to JSON.
+- [x] **45 tests**, including a full game played over real HTTP, illegal actions returning 400,
+      unknown games 404, and path traversal refused.
+
+## Phase 7 — A better opponent ⬜
+
+The interface is done and the rules are confirmed working, so the opponent can now be improved
+**without touching the interface** — an agent is only a `(observation, info) -> index` callable,
+and `interfaces/web/api.py` picks it from a dict.
+
+Today's `GreedyAgent` orders action types sensibly and then chooses a position **at random**. It
+beats `RandomAgent` about 70% of the time, which says more about random than about greedy. There
+is no positional judgement in the project yet.
+
+- [ ] **Position evaluation.** Score a vertex by the production it actually buys: Σ pip odds of
+      its tiles, weighted for resource diversity (five resources beat three good ones), plus port
+      access, minus proximity to the opponent. The encoder already computes pip potential per
+      vertex — reuse it rather than writing a second version.
 - [ ] **Opening placement.** The two setup settlements decide most 1v1 games. Evaluate every legal
       vertex, and pick the road that opens the best *next* spot rather than a random neighbour.
 - [ ] **Build policy.** City where production is best, settlement toward the best open spot, road
@@ -387,58 +429,17 @@ so the opponent can be made good and *felt* to be good before the UI exists.
 - [ ] **Card policy.** Monopoly on what opponents hold most of; Year of Plenty to complete a build
       this turn; Knights toward Largest Army when it is close; discard whatever is not in the plan.
 - [ ] **Difficulty levels.** One knob: noise added to the evaluation, so *easy* misjudges spots and
-      *hard* does not. Cheaper and more honest than crippling the rules.
+      *hard* does not. Cheaper and more honest than crippling the rules. Exposed in the web app's
+      opponent dropdown, which already reads `api.OPPONENTS`.
 - [ ] **Measure it.** `play_match` against random and greedy, seats swapped, with the win rate
-      recorded in the docs. The bar: it should beat greedy at least as decisively as greedy beats
-      random, and its opening placements should be defensible to a human eye.
-
-## Phase 7 — The web game ⬜
-
-A local web app: Python serves the engine, the browser draws the board and posts clicks.
-
-**Architecture — the server decides everything.** The client renders and reports clicks; it holds
-no rules, no legality, and no board generation. That is not a style preference: the last time this
-project had board logic in JavaScript it was a second implementation that could disagree with the
-engine, which is the exact problem the rewrite removed. Keeping the logic in Python also keeps it
-*testable*, which browser code is not.
-
-**The geometry is static**, so the client fetches it once and thereafter receives only what
-changed. `topology` already provides every coordinate.
-
-- [ ] **`interfaces/web/server.py`** — FastAPI + uvicorn (the stack you already know, and its
-      `TestClient` makes every endpoint testable):
-      - `GET /api/geometry` — tiles, vertices, roads and their lattice coordinates. Static, cached.
-      - `POST /api/game` — start one; ruleset, seed, difficulty.
-      - `GET /api/game/{id}` — the human's view: board, pieces, *their* hand, opponents' counts,
-        the legal mask grouped for display, and the events since last poll.
-      - `POST /api/game/{id}/action` — apply an index, then run the AI's turns, returning
-        everything that happened.
-      - `POST /api/game/{id}/undo`, `/save`, `/load`.
-      - Hidden information is filtered **server-side**. If an opponent's hand is in the JSON, it
-        is in the browser, and someone will read it.
-- [ ] **The board, as SVG.** Each tile, vertex and road is an element carrying its id, positioned
-      from `/api/geometry` — the same lattice `render.py` maps to pixels. Legal targets highlight;
-      clicking one posts the action. The art already in `interfaces/static/images` drops straight
-      in.
-- [ ] **The interaction loop.** Pick an action type from a panel → the board highlights the legal
-      targets → click one. This is what replaces a numbered list of 54, and it is why the grouping
-      work lives in Phase 5.
-- [ ] **Show the story.** An event log fed by Phase 5 — every roll, payout, theft and purchase —
-      and the AI's turn played back a beat at a time rather than resolving instantly. A game where
-      the opponent's whole turn appears at once is unreadable.
-- [ ] **The rest of a real game.** New game with options, undo, save/resume, a game-over summary
-      showing the victory-point breakdown, and the opponent's hidden cards revealed at the end.
-- [ ] **Tests.** Endpoint tests through `TestClient`, including a **leak test**: no response a
-      human receives may contain an opponent's hand composition, their development cards, the
-      development deck, or the dice deck. The same leak detectors the encoder has, applied to JSON.
-- [ ] **`python -m interfaces.web`** to launch it, and a line in the README.
+      recorded in the docs.
 
 ## What this deliberately does not include
 
 - **A trained agent.** The interface talks to the same `(observation, info) -> index` callable that
   `RandomAgent` and `GreedyAgent` implement, so a learned policy drops in later without the
-  interface changing. That work — belief sampling, self-play, a network — stays where it is
-  described under Phase 3.
+  interface changing — it is one entry in `api.OPPONENTS`. That work — belief sampling, self-play,
+  a network — stays where it is described under Phase 3.
 - **Multiplayer over a network.** One human against the AI, locally. Accounts, lobbies and
   matchmaking are a different project.
 - **A FullStackCatan adapter**, per the note above: the two projects stay independent.

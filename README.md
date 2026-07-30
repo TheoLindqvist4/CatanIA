@@ -22,7 +22,7 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 ## ⭐ État actuel
 
-**Fonctionne** (553 tests) :
+**Fonctionne** (598 tests) :
 
 - 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
   toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
@@ -119,7 +119,16 @@ save(env.state, "board.png")
    ```sh
    pip install -r requirements.txt
    ```
-3. 🎮 **Jouer dans le terminal** :
+3. 🎮 **Jouer dans le navigateur** (recommandé) :
+   ```sh
+   python -m interfaces.web
+   ```
+   Puis ouvrir <http://127.0.0.1:8000>. On clique directement sur le plateau pour poser une
+   colonie, une route ou une ville ; les emplacements légaux clignotent. Le dé, les mains, les
+   cartes, la banque, le voleur et le journal de la partie sont affichés en permanence.
+   Aucune dépendance : uniquement la bibliothèque standard.
+
+4. ⌨️ **Ou jouer dans le terminal** :
    ```sh
    python -m interfaces.cli                          # vous contre l'agent glouton
    python -m interfaces.cli --agents greedy random   # observer deux agents
@@ -127,7 +136,7 @@ save(env.state, "board.png")
    python -m interfaces.cli --render out/            # écrire un PNG par action
    ```
 
-4. 🤖 **Ou piloter le moteur depuis du code** :
+5. 🤖 **Ou piloter le moteur depuis du code** :
    ```python
    from catan.env import CatanEnv
 
@@ -164,6 +173,10 @@ CatanIA/
 │-- 🖥️ interfaces/            # Les seules parties qui affichent quelque chose
 │   │-- 🖼️ render.py          #   rendu du plateau en PNG
 │   │-- ⌨️ cli.py             #   jouer ou observer une partie en terminal
+│   │-- 🌐 web/               #   le jeu jouable dans le navigateur
+│   │   │-- api.py            #     la partie sous forme de dictionnaires (testable)
+│   │   │-- server.py         #     serveur HTTP minimal (bibliothèque standard)
+│   │   │-- static/           #     plateau SVG, clic pour jouer
 │-- 🧪 tests/                 # Suite de tests (pytest)
 │-- 📚 docs/                  # Audit, géométrie, moteur, décisions clés
 │-- 🛣️ ROADMAP.md             # État du projet et phases

@@ -21,6 +21,7 @@ No I/O, and no use of the global ``random`` module.
 """
 
 from catan import dice, resources
+from catan.events import Award, Event, EventKind
 from catan.actions import (
     DEV_CARD_PLAYS,
     Action,
@@ -339,17 +340,32 @@ def update_awards(state):
     Called after anything that can change them — building a road, but also building a
     settlement or city, which can *break* an opponent's road and take Longest Road off
     them.
+
+    A change of holder is worth 2 points and is the sort of thing a player must be told
+    about, so it is announced.
     """
-    state.largest_army_holder = _update_award(
-        state.largest_army_holder,
+    _set_award(
+        state, Award.LARGEST_ARMY, "largest_army_holder",
         {p: state.knights_played[p] for p in state.players},
         LARGEST_ARMY_MINIMUM,
     )
-    state.longest_road_holder = _update_award(
-        state.longest_road_holder,
+    _set_award(
+        state, Award.LONGEST_ROAD, "longest_road_holder",
         longest_road_lengths(state),
         LONGEST_ROAD_MINIMUM,
     )
+
+
+def _set_award(state, award, attribute, scores, minimum):
+    before = getattr(state, attribute)
+    after = _update_award(before, scores, minimum)
+    if after == before:
+        return
+    setattr(state, attribute, after)
+    if before is not None:
+        state.events.append(Event(EventKind.AWARD, before, position=int(award), amount=0))
+    if after is not None:
+        state.events.append(Event(EventKind.AWARD, after, position=int(award), amount=1))
 
 
 # --------------------------------------------------------------------------- #
@@ -599,6 +615,7 @@ def _apply_discard(state, player, action):
     state.hands[player][resource] -= 1
     state.bank[resource] += 1
     state.discards_owed[player] -= 1
+    state.events.append(Event(EventKind.DISCARDED, player, resource=resource))
     _advance_after_discards(state)
 
 
@@ -617,6 +634,7 @@ def _apply_move_robber(state, player, action):
         raise IllegalAction(f"cannot {action!r}")
 
     state.robber_tile = tile
+    state.events.append(Event(EventKind.ROBBER_MOVED, player, position=tile))
     if victim:
         _steal_one_card(state, player, victim)
 
@@ -640,6 +658,8 @@ def _steal_one_card(state, thief, victim):
         if pick < count:
             hand[resource] -= 1
             state.hands[thief][resource] += 1
+            state.events.append(
+                Event(EventKind.STOLE, thief, resource=resource, other=victim))
             return
         pick -= count
 
@@ -724,12 +744,16 @@ def _apply_dev_card(state, player, action):
         if not can_play_monopoly(state, player, resource):
             raise IllegalAction(f"cannot {action!r}")
         _spend_dev_card(state, player, DevCard.MONOPOLY)
+        haul = 0
         for other in state.players:
             if other == player:
                 continue
             taken = state.hands[other][resource]
             state.hands[other][resource] = 0
             state.hands[player][resource] += taken
+            haul += taken
+        state.events.append(
+            Event(EventKind.MONOPOLISED, player, resource=resource, amount=haul))
         return
 
     raise IllegalAction(f"not a development card play: {action!r}")
@@ -738,10 +762,12 @@ def _apply_dev_card(state, player, action):
 def _spend_dev_card(state, player, card):
     state.dev_cards[player][card] -= 1
     state.dev_card_played_this_turn = True
+    state.events.append(Event(EventKind.PLAYED_DEV, player, position=int(card)))
 
 
 def _apply_build(state, player, action):
     if action.type is ActionType.END_TURN:
+        state.events.append(Event(EventKind.TURN_ENDED, player))
         state.turn_number += 1
         state.phase = Phase.ROLL
         state.dev_card_played_this_turn = False
@@ -762,6 +788,7 @@ def _apply_build(state, player, action):
         card = state.dev_deck.pop()
         state.dev_cards[player][card] += 1
         state.dev_cards_new[player][card] += 1
+        state.events.append(Event(EventKind.BOUGHT_DEV, player))
         # A Victory Point card can win the game the moment it is drawn.
         _check_for_winner(state, player)
         return
@@ -776,6 +803,8 @@ def _apply_build(state, player, action):
         state.bank[give] += rate
         state.bank[take] -= 1
         hand[take] += 1
+        state.events.append(
+            Event(EventKind.TRADED, player, resource=give, amount=rate, other=take))
         return  # a trade cannot win the game
 
     if action.type is ActionType.BUILD_ROAD:
@@ -803,6 +832,8 @@ def _apply_build(state, player, action):
         state.vertex_piece[vertex] = Piece.CITY
         state.cities_left[player] -= 1
         state.settlements_left[player] += 1  # the settlement returns to the supply
+        state.events.append(
+            Event(EventKind.BUILT, player, position=vertex, other=int(Piece.CITY)))
 
     else:
         raise IllegalAction(f"unknown action {action!r}")
@@ -828,11 +859,14 @@ def _put_building(state, player, vertex, piece):
     state.vertex_owner[vertex] = player
     state.vertex_piece[vertex] = piece
     state.settlements_left[player] -= 1
+    state.events.append(
+        Event(EventKind.BUILT, player, position=vertex, other=int(piece)))
 
 
 def _put_road(state, player, road):
     state.edge_owner[road] = player
     state.roads_left[player] -= 1
+    state.events.append(Event(EventKind.BUILT, player, position=road, other=0))
 
 
 def _check_vertex(position):
@@ -876,6 +910,7 @@ def roll_dice(state):
     roll = first + second
     state.last_roll = roll
     state.rolled_this_turn = True
+    state.events.append(Event(EventKind.ROLLED, state.turn_player, amount=roll))
 
     if roll == ROBBER_ROLL:
         begin_robber(state)
@@ -952,6 +987,8 @@ def distribute(state, roll):
             state.hands[player][resource] += amount
             state.bank[resource] -= amount
             paid[player][resource] = amount
+            state.events.append(
+                Event(EventKind.PRODUCED, player, resource=resource, amount=amount))
 
     return paid
 
@@ -995,6 +1032,7 @@ def _check_for_winner(state, player):
     if victory_points(state, player) >= state.ruleset.victory_points_to_win:
         state.winner = player
         state.phase = Phase.GAME_OVER
+        state.events.append(Event(EventKind.GAME_OVER, player))
 
 
 # --------------------------------------------------------------------------- #
