@@ -34,6 +34,7 @@ the reasoning at the time is the point.
 | [0010](decisions/0010-harbour-placement.md) | Harbours are randomised per board, but evenly spaced | accepted |
 | [0011](decisions/0011-no-player-to-player-trading.md) | No player-to-player trading in this version | accepted — deferred |
 | [0012](decisions/0012-development-card-modelling.md) | How development cards are modelled | accepted |
+| [0013](decisions/0013-ranked-1v1-ruleset.md) | Ranked 1v1 is the target ruleset | accepted |
 
 ## Worth knowing
 
@@ -69,6 +70,19 @@ Consequences that are easy to trip over:
   usually an opponent. Use `state.turn_player` for the turn holder.
 - **No player-to-player trading** ([0011](decisions/0011-no-player-to-player-trading.md)),
   deliberately, for the 1v1 target.
+- **The default ruleset is ranked 1v1, not base Catan**
+  ([0013](decisions/0013-ranked-1v1-ruleset.md)): 15 points to win, hand limit 9, Friendly
+  Robber, Balanced Dice. `GameState(ruleset=BASE_GAME)` gives the printed rules. Tests that
+  care about the *mechanism* read `state.ruleset.*`; tests that pin a printed number say which
+  ruleset they mean.
+- **Friendly Robber blocks placement, not just stealing.** A player at or below 2 *public*
+  points cannot be robbed **and** their tiles cannot be blocked. Hidden Victory Point cards do
+  not count toward the threshold, which is what `public_victory_points` is for.
+- **Balanced Dice makes clones replay the same rolls, even sharing the RNG**
+  ([0013](decisions/0013-ranked-1v1-ruleset.md)). The 36-card deck is copied on clone, so
+  search cannot get divergent rollouts from the RNG alone — it must reshuffle the unseen
+  remainder itself. The same applies to `dev_deck` and opponents' `dev_cards`: three pieces of
+  hidden state Phase 3 must sample over together.
 - **`legal_actions` is not empty during `Phase.ROLL`.** A development card may be played
   before the dice, so a driver must branch on `phase is Phase.ROLL` rather than on
   "`legal_actions` came back empty" ([0012](decisions/0012-development-card-modelling.md)).

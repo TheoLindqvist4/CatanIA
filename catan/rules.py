@@ -20,7 +20,7 @@ calls it when ``state.phase is Phase.ROLL``; ``legal_actions`` returns nothing t
 No I/O, and no use of the global ``random`` module.
 """
 
-from catan import resources
+from catan import dice, resources
 from catan.actions import (
     DEV_CARD_PLAYS,
     Action,
@@ -58,11 +58,9 @@ from catan.resources import (
     SPECIFIC_HARBOUR_RATE,
 )
 from catan.state import (
-    HAND_LIMIT,
     NO_OWNER,
     PIECE_VICTORY_POINTS,
     PIECE_YIELD,
-    VICTORY_POINTS_TO_WIN,
     Phase,
     Piece,
 )
@@ -75,9 +73,6 @@ from catan.topology import (
     VERTEX_NEIGHBOURS,
     VERTEX_ROADS,
 )
-
-DICE_FACES = 6
-
 
 class IllegalAction(ValueError):
     """Raised when :func:`apply` is given an action the rules do not allow."""
@@ -365,8 +360,23 @@ def discard_count(state, player):
 
 
 def must_discard(state, player):
-    """Whether ``player``'s hand is over the limit, i.e. a 7 costs them cards."""
-    return resources.total(state.hands[player]) > HAND_LIMIT
+    """Whether ``player``'s hand is over the limit, i.e. a 7 costs them cards.
+
+    The limit comes from the ruleset: 7 in the base game, 9 in ranked 1v1.
+    """
+    return resources.total(state.hands[player]) > state.ruleset.hand_limit
+
+
+def is_robber_protected(state, player):
+    """Whether Friendly Robber shields ``player`` from being robbed or blocked.
+
+    Ranked 1v1 protects anyone at or below 2 **public** victory points — settlements,
+    cities and the two awards count; hidden Victory Point cards do not. It gives whoever
+    is behind early some breathing room.
+    """
+    if not state.ruleset.friendly_robber:
+        return False
+    return public_victory_points(state, player) <= state.ruleset.friendly_robber_threshold
 
 
 def owes_discard(state, player):
@@ -374,32 +384,63 @@ def owes_discard(state, player):
     return state.discards_owed[player] > 0
 
 
+def occupants_of(state, tile, excluding=NO_OWNER):
+    """Players with a building on ``tile``, other than ``excluding``."""
+    return tuple(sorted({
+        state.vertex_owner[vertex]
+        for vertex in TILE_VERTICES[tile]
+        if state.vertex_owner[vertex] not in (NO_OWNER, excluding)
+    }))
+
+
 def victims_at(state, tile, robber):
     """Players ``robber`` could steal from if the robber went to ``tile``.
 
-    Anyone with a building on the tile, who holds at least one card, and is not the
-    robber themselves. Stealing from an empty hand is not a choice the rules offer.
+    Anyone with a building on the tile who holds at least one card and is not the robber
+    themselves — stealing from an empty hand is not a choice the rules offer — and, under
+    Friendly Robber, is not protected.
     """
-    return tuple(sorted({
-        owner
-        for vertex in TILE_VERTICES[tile]
-        for owner in (state.vertex_owner[vertex],)
-        if owner != NO_OWNER
-        and owner != robber
-        and resources.total(state.hands[owner]) > 0
-    }))
+    return tuple(
+        player for player in occupants_of(state, tile, excluding=robber)
+        if resources.total(state.hands[player]) > 0
+        and not is_robber_protected(state, player)
+    )
+
+
+def robber_destinations(state, player):
+    """Tiles the robber may be moved to.
+
+    Never the tile it is already on — it must move. Under Friendly Robber, never a tile
+    where a *protected* opponent has a building: they cannot be blocked either, not just
+    not robbed.
+    """
+    candidates = [
+        tile for tile in range(1, NUM_TILES + 1) if tile != state.robber_tile
+    ]
+    if not state.ruleset.friendly_robber:
+        return candidates
+
+    allowed = [
+        tile for tile in candidates
+        if not any(
+            is_robber_protected(state, occupant)
+            for occupant in occupants_of(state, tile, excluding=player)
+        )
+    ]
+    # Unreachable in practice: a protected player holds at most 2 public points, so at
+    # most two buildings, so at most six blocked tiles out of eighteen. Guarded anyway,
+    # because an empty list here would deadlock the game rather than fail loudly.
+    return allowed or candidates
 
 
 def can_move_robber(state, player, tile, victim):
     """Whether the robber may go to ``tile`` and rob ``victim`` (0 for nobody).
 
-    The robber must actually move — it may not be left where it is — and the victim
-    must be a valid choice for that tile. ``victim`` of 0 is only legal when the tile
-    offers nobody to rob.
+    ``victim`` of 0 is only legal when the tile offers nobody to rob.
     """
     if not 1 <= tile <= NUM_TILES:
         return False
-    if tile == state.robber_tile:
+    if tile not in robber_destinations(state, player):
         return False
     options = victims_at(state, tile, player)
     return victim in options if options else victim == 0
@@ -441,9 +482,7 @@ def legal_actions(state):
 
     if state.phase is Phase.MOVE_ROBBER:
         actions = []
-        for tile in range(1, NUM_TILES + 1):
-            if tile == state.robber_tile:
-                continue
+        for tile in robber_destinations(state, player):
             options = victims_at(state, tile, player)
             actions += [move_robber(tile, victim) for victim in (options or (0,))]
         return actions
@@ -807,7 +846,12 @@ def roll_dice(state):
     if state.phase is not Phase.ROLL:
         raise IllegalAction(f"cannot roll during {state.phase.name}")
 
-    roll = state.rng.randint(1, DICE_FACES) + state.rng.randint(1, DICE_FACES)
+    if state.ruleset.balanced_dice:
+        first, second = dice.draw_balanced(state)
+    else:
+        first, second = dice.roll_plain(state.rng)
+
+    roll = first + second
     state.last_roll = roll
     state.rolled_this_turn = True
 
@@ -926,7 +970,7 @@ def scores(state):
 
 
 def _check_for_winner(state, player):
-    if victory_points(state, player) >= VICTORY_POINTS_TO_WIN:
+    if victory_points(state, player) >= state.ruleset.victory_points_to_win:
         state.winner = player
         state.phase = Phase.GAME_OVER
 

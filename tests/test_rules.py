@@ -11,10 +11,10 @@ from catan.actions import Action, ActionType, build_city, build_road, build_sett
 from catan.board import ROBBER_ROLL
 from catan.resources import CITY_COST, ROAD_COST, SETTLEMENT_COST, Resource, can_afford
 from catan.rules import IllegalAction
+from catan.rulesets import BASE_GAME
 from catan.state import (
     MAX_ROADS,
     NO_OWNER,
-    VICTORY_POINTS_TO_WIN,
     Phase,
     Piece,
 )
@@ -596,8 +596,9 @@ def test_end_turn_is_always_available_so_a_player_can_never_be_stuck():
         rules.apply(state, end_turn())
 
 
-def test_reaching_ten_points_ends_the_game():
-    state = fresh(seed=1)
+def test_reaching_the_win_condition_ends_the_game():
+    # base game, so ten points; ranked 1v1 needs fifteen
+    state = fresh(seed=1, ruleset=BASE_GAME)
     in_build_phase(state, 1)
     enough_for_everything(state, 1)
 
@@ -620,7 +621,7 @@ def test_reaching_ten_points_ends_the_game():
     put_building(state, 1, extra, Piece.SETTLEMENT)
     rules._check_for_winner(state, 1)
 
-    assert rules.victory_points(state, 1) >= VICTORY_POINTS_TO_WIN
+    assert rules.victory_points(state, 1) >= state.ruleset.victory_points_to_win
     assert state.winner == 1
     assert state.phase is Phase.GAME_OVER
     assert rules.legal_actions(state) == []

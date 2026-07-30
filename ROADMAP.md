@@ -18,11 +18,15 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 |---|---|---|
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
-| **2** | Complete the rules | ✅ **done** |
+| **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
 | **3** | AI surface (action space, observations, env) | ⬜ next |
 | **4** | Interfaces (CLI, web API) | ⬜ not started |
 
-417 tests. `python -m pytest -m "not slow"` runs the fast ones in ~5s.
+457 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+
+The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
+Balanced Dice — with base-game Catan available as a control
+([decision 0013](docs/decisions/0013-ranked-1v1-ruleset.md)).
 
 ---
 
@@ -31,7 +35,10 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 ```
 catan/
   topology.py      # ✅ Geometry GENERATED from ROW_LENGTHS, frozen at import. O(1) lookups.
+  rulesets.py      # ✅ RuleSet: base game vs ranked 1v1 (the default)
   resources.py     # ✅ the five resources; costs as fixed-width vectors
+  dev_cards.py     # ✅ the 25-card deck, award thresholds
+  dice.py          # ✅ plain 2d6, or Colonist's 36-card Balanced Dice deck
   board.py         # ✅ one layout: numbers, resources, production index. IMMUTABLE.
   state.py         # ✅ GameState: vertex_owner[54], vertex_piece[54], edge_owner[72],
                    #    hands, supplies, phase, turn.  clone() / __eq__
@@ -212,6 +219,14 @@ almost always zero.
       → **40 of 40** random games finish, median 349 turns. Largest Army is held in 39 and
       Longest Road in 37, so both are contested. Winners' points: buildings 203, VP cards 92,
       army 58, road 50.
+- [x] **The ranked 1v1 ruleset**, after reading the published Colonist settings: 15 points to
+      win, hand limit 9, **Friendly Robber** (a player at or below 2 *public* points cannot be
+      robbed, and their tiles cannot even be blocked), and **Balanced Dice** (a 36-card deck of
+      every two-dice combination, replaced when 12 remain). Made configuration rather than
+      special cases, so base-game Catan stays runnable as a control.
+      → [decision 0013](docs/decisions/0013-ranked-1v1-ruleset.md)
+      → both rulesets finish 30/30 random games; ranked 1v1 takes a median 435 turns to 15
+      points against 326 to 10.
 - [ ] **Official spiral layout** as an alternative to balanced generation, behind a config flag.
       The house rule makes double-production vertices impossible, so an agent trained only on it
       never learns to value a "double 6" spot —

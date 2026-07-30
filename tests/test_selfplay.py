@@ -12,7 +12,7 @@ import pytest
 pytestmark = pytest.mark.slow
 
 import catan.topology as T
-from catan import rules
+from catan import dice, rules
 from catan.dev_cards import (
     AWARD_VICTORY_POINTS,
     DECK_SIZE,
@@ -115,7 +115,8 @@ def assert_invariants(state):
     assert state.turn_player in state.players
     if state.phase is Phase.GAME_OVER:
         assert state.winner in state.players
-        assert rules.victory_points(state, state.winner) >= 10
+        assert (rules.victory_points(state, state.winner)
+                >= state.ruleset.victory_points_to_win)
     else:
         assert state.winner is None
     if state.in_setup:
@@ -125,6 +126,17 @@ def assert_invariants(state):
 
     # --- the robber ---
     assert 1 <= state.robber_tile <= T.NUM_TILES
+    if state.phase is Phase.MOVE_ROBBER:
+        assert rules.legal_actions(state), \
+            "the robber has nowhere legal to go — Friendly Robber blocked everything"
+
+    # --- the dice deck, when the ruleset uses one ---
+    if state.ruleset.balanced_dice:
+        assert state.dice_deck is not None
+        assert dice.RESHUFFLE_AT < len(state.dice_deck) <= dice.DECK_SIZE
+        assert all(1 <= a <= 6 and 1 <= b <= 6 for a, b in state.dice_deck)
+    else:
+        assert state.dice_deck is None
 
     # --- discards only pend during the discard phase, and only for players who owe ---
     if state.phase is Phase.DISCARD:

@@ -11,7 +11,8 @@ from catan.actions import ActionType, discard, end_turn, move_robber
 from catan.board import ROBBER_ROLL
 from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, Resource, total
 from catan.rules import IllegalAction
-from catan.state import HAND_LIMIT, Phase, Piece
+from catan.rulesets import BASE_GAME, RANKED_1V1
+from catan.state import Phase, Piece
 from helpers import (
     complete_setup,
     fresh,
@@ -84,7 +85,7 @@ def test_a_seven_with_nobody_over_the_limit_goes_straight_to_the_robber():
 def test_a_seven_asks_the_over_limit_players_to_discard_first():
     state = fresh(seed=1)
     complete_setup(state)
-    give(state, 1, wood=8)
+    give(state, 1, wood=state.ruleset.hand_limit + 1)
     give(state, 2, wood=2)
     at_seven(state)
 
@@ -97,7 +98,7 @@ def test_the_discard_order_starts_at_the_roller_and_follows_turn_order():
     state = fresh(num_players=4, player_order=[3, 4, 1, 2], seed=1)
     complete_setup(state)
     for player in state.players:
-        give(state, player, wood=9)
+        give(state, player, wood=state.ruleset.hand_limit + 2)
     state.turn_number = 1  # player 4 is rolling
     assert state.turn_player == 4
 
@@ -108,9 +109,9 @@ def test_the_discard_order_starts_at_the_roller_and_follows_turn_order():
 def test_a_player_at_exactly_the_limit_does_not_discard():
     state = fresh(seed=1)
     complete_setup(state)
-    give(state, 1, wood=4, brick=3)  # exactly 7
-    give(state, 2, wood=4, brick=4)  # 8, over
-    assert total(state.hands[1]) == HAND_LIMIT
+    limit = state.ruleset.hand_limit
+    give(state, 1, wood=limit)          # exactly at the limit
+    give(state, 2, wood=limit + 1)      # one over
     at_seven(state)
     assert state.pending_discards == [2]
 
@@ -127,7 +128,8 @@ def test_a_player_at_exactly_the_limit_does_not_discard():
     (15, 7, 8),
 ])
 def test_you_give_up_half_your_hand_rounded_down(held, given_up, kept):
-    state = fresh(seed=1)
+    # base game, so the printed numbers apply: the limit is 7 and all of these exceed it
+    state = fresh(seed=1, ruleset=BASE_GAME)
     complete_setup(state)
     give(state, 1, wood=held)
     give(state, 2, wood=1)
@@ -145,7 +147,7 @@ def test_you_give_up_half_your_hand_rounded_down(held, given_up, kept):
 def test_the_discard_count_is_fixed_when_the_seven_is_rolled():
     """Recomputing it as the hand shrinks would move the target and stop early — which
     is exactly the bug this test was written for: 10 cards stopped at 7, not 5."""
-    state = fresh(seed=1)
+    state = fresh(seed=1, ruleset=BASE_GAME)
     complete_setup(state)
     give(state, 1, wood=10)
     give(state, 2, wood=1)
@@ -225,8 +227,9 @@ def test_every_over_limit_player_discards_before_the_robber_moves():
 def test_only_the_discarding_player_may_act():
     state = fresh(seed=1)
     complete_setup(state)
-    give(state, 1, wood=9)
-    give(state, 2, wood=9)
+    over = state.ruleset.hand_limit + 2
+    give(state, 1, wood=over)
+    give(state, 2, wood=over)
     at_seven(state)
 
     first = state.pending_discards[0]
@@ -241,7 +244,7 @@ def test_building_is_not_offered_during_a_discard():
     state = fresh(seed=1)
     complete_setup(state)
     give(state, 1, wood=9, brick=9, sheep=9, wheat=9)
-    give(state, 2, wood=1)
+    give(state, 2, wood=1)  # noqa: over the limit under either ruleset
     at_seven(state)
     assert all(a.type is ActionType.DISCARD for a in rules.legal_actions(state))
     with pytest.raises(IllegalAction):
@@ -265,7 +268,8 @@ def test_the_robber_must_actually_move():
 
 
 def test_every_other_tile_is_a_legal_destination():
-    state = fresh(seed=1)
+    # base game: Friendly Robber would put some tiles off limits
+    state = fresh(seed=1, ruleset=BASE_GAME)
     complete_setup(state)
     at_seven(state)
     destinations = {a.position for a in rules.legal_actions(state)}
@@ -500,7 +504,7 @@ def test_hands_never_exceed_the_limit_once_a_seven_has_been_resolved():
                     while state.phase is Phase.DISCARD:
                         rules.apply(state, rng.choice(rules.legal_actions(state)))
                     for player in state.players:
-                        assert total(state.hands[player]) <= HAND_LIMIT, (
+                        assert total(state.hands[player]) <= state.ruleset.hand_limit, (
                             f"player {player} still holds "
                             f"{total(state.hands[player])} after discards"
                         )

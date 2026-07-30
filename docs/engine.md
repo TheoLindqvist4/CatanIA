@@ -13,7 +13,10 @@ global `random` module.
 | Module | Holds | Mutable? |
 |---|---|---|
 | `catan.topology` | the geometry: 19 tiles, 54 vertices, 72 roads, every incidence relation | no — generated once at import |
+| `catan.rulesets` | `RuleSet`: base game vs **ranked 1v1** (the default) | no — frozen |
 | `catan.resources` | the five resources, and what things cost | no |
+| `catan.dev_cards` | the 25-card deck and the award thresholds | no |
+| `catan.dice` | plain 2d6, or the 36-card Balanced Dice deck | no |
 | `catan.board` | one layout: numbers, resources, production index | **no** — immutable after construction |
 | `catan.state` | `GameState`: ownership, hands, supplies, phase, turn | yes — this is the only mutable thing |
 | `catan.actions` | `Action = (type, position, extra)` | — |
@@ -41,6 +44,27 @@ arity makes that a lookup rather than a parse:
 | `PLAY_MONOPOLY` | resource demanded | — |
 
 ---
+
+## Rulesets
+
+The target format is **Colonist ranked 1v1**, which is not base Catan with two players. Four
+things differ, and they are configuration rather than special cases:
+
+| | `BASE_GAME` | `RANKED_1V1` (default) |
+|---|---|---|
+| victory points to win | 10 | **15** |
+| hand limit before discarding | 7 | **9** |
+| Friendly Robber | off | **on** — a player at or below 2 *public* points cannot be robbed, and their tiles cannot be blocked |
+| Balanced Dice | off | **on** — draw from a 36-card deck of every two-dice combination |
+
+```python
+state = GameState(seed=1)                      # ranked 1v1
+state = GameState(seed=1, ruleset=BASE_GAME)   # printed Catan
+```
+
+Read `state.ruleset.hand_limit` and `state.ruleset.victory_points_to_win` rather than the
+module-level constants, which are the *printed* values. Keeping the base game runnable is how
+you tell a variant from a bug — [decision 0013](decisions/0013-ranked-1v1-ruleset.md).
 
 ## The state model
 
@@ -166,7 +190,8 @@ the robber, 7-handling, discarding and stealing · all five development cards wi
 rules · Largest Army · Longest Road · victory points and the win at 10 · 2–4 players · full
 determinism from a seed.
 
-Random 2-player games: **40 of 40** reach 10 points, median 349 turns. Largest Army is held in
+Random 2-player games finish under both rulesets: **30 of 30** each, at a median of 326 turns
+to 10 points (base game) and 435 turns to 15 (ranked 1v1). Largest Army is held in
 39 of them and Longest Road in 37, so both are contested rather than decorative. Winners' points
 came from buildings 203, Victory Point cards 92, Largest Army 58, Longest Road 50.
 
@@ -243,8 +268,8 @@ state, not the shared board ([decision 0009](decisions/0009-immutable-board-muta
 
 Rolling a **7** pays nobody. Instead:
 
-1. Everyone holding **more than 7** cards discards **half, rounded down** — so 9 cards means
-   losing 4 and keeping 5. The count is fixed when the 7 is rolled and stored in
+1. Everyone over the hand limit — **7** in the base game, **9** in ranked 1v1 — discards
+   **half, rounded down**, so 9 cards means losing 4 and keeping 5. The count is fixed when the 7 is rolled and stored in
    `state.discards_owed`; recomputing it from the shrinking hand would move the target and
    stop the discards early. Order starts at the roller and follows seat order.
 2. The roller then moves the robber. It **must** move — the tile it is on is not a legal
@@ -254,6 +279,11 @@ A robbed card is drawn uniformly over the victim's **cards**, not over their res
 so a hand of five wood and one ore gives up wood five times in six. You cannot rob yourself,
 and cannot rob a player holding nothing — if the destination offers no victim, the action
 carries `extra = 0`.
+
+Under **Friendly Robber** (ranked 1v1) a player at or below 2 **public** points is protected:
+they cannot be robbed, *and* their tiles are not legal destinations at all. Hidden Victory Point
+cards do not count toward that threshold, which is what `public_victory_points` is for. Your own
+buildings never protect a tile from you.
 
 The tile under the robber **produces nothing for anyone** until it moves again.
 

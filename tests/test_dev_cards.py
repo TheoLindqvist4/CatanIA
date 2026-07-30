@@ -31,6 +31,7 @@ from catan.dev_cards import (
 )
 from catan.resources import DEV_CARD_COST, Resource, total
 from catan.rules import IllegalAction
+from catan.rulesets import BASE_GAME
 from catan.state import Phase, Piece
 from helpers import (
     complete_setup,
@@ -534,7 +535,8 @@ def test_a_victory_point_card_is_never_offered_as_a_play():
 
 
 def test_buying_a_victory_point_card_can_win_the_game():
-    state = fresh(seed=1)
+    # base game: nine points already, so the tenth wins
+    state = fresh(seed=1, ruleset=BASE_GAME)
     in_build_phase(state, 1)
     enough_for_everything(state, 1, times=50)
     hand_card(state, 1, DevCard.VICTORY_POINT, count=9)
@@ -691,7 +693,7 @@ def test_a_player_can_hold_both_awards():
     assert rules.victory_points(state, 1) == 2 * AWARD_VICTORY_POINTS
 
 
-def test_awards_plus_buildings_plus_cards_reach_ten():
+def test_awards_plus_buildings_plus_cards_add_up():
     state = fresh(seed=1)
     put_building(state, 1, 20, Piece.CITY)     # 2
     put_building(state, 1, 31, Piece.CITY)     # 2

@@ -70,9 +70,9 @@ def complete_setup(state, rng=None):
 
 
 def play_random_game(seed=0, max_actions=20_000, prefer_building=True,
-                     num_players=2, on_step=None):
+                     num_players=2, on_step=None, ruleset=None):
     """Build a state and drive a full game with random legal actions."""
-    state = GameState(num_players=num_players, seed=seed)
+    state = GameState(num_players=num_players, seed=seed, ruleset=ruleset)
     drive(state, random.Random(seed ^ 0x5EED), max_actions=max_actions,
           prefer_building=prefer_building, on_step=on_step)
     return state

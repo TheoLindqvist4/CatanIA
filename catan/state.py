@@ -24,6 +24,7 @@ play belongs here, including the robber when Phase 2 adds it.
 import random
 from enum import IntEnum
 
+from catan import dice, rulesets
 from catan.board import Board
 from catan.dev_cards import build_deck, empty_holding
 from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, empty_hand
@@ -58,7 +59,8 @@ class Phase(IntEnum):
     GAME_OVER = 6
 
 
-#: Holding more than this when a 7 is rolled means discarding down to half.
+#: Base-game hand limit. The active value is ``state.ruleset.hand_limit`` — ranked 1v1
+#: raises it to 9. Kept as a name because it is the printed rule.
 HAND_LIMIT = 7
 
 
@@ -72,6 +74,8 @@ MAX_SETTLEMENTS = 5
 MAX_CITIES = 4
 MAX_ROADS = 15
 
+#: Base-game win condition. The active value is
+#: ``state.ruleset.victory_points_to_win`` — ranked 1v1 raises it to 15.
 VICTORY_POINTS_TO_WIN = 10
 
 MIN_PLAYERS = 2
@@ -80,7 +84,7 @@ MAX_PLAYERS = 4
 
 class GameState:
     def __init__(self, num_players=2, seed=None, rng=None, board=None,
-                 player_order=None):
+                 player_order=None, ruleset=None):
         """
         Args:
             num_players: 2 to 4.
@@ -89,6 +93,8 @@ class GameState:
             board: an existing board to reuse; generated from ``rng`` if omitted.
             player_order: turn order. Defaults to ``[1, 2, ...]``; pass a shuffled
                 list, or call :meth:`randomize_order` before setup begins.
+            ruleset: a :class:`catan.rulesets.RuleSet`. Defaults to ranked 1v1, the
+                format this project targets; pass ``BASE_GAME`` for printed Catan.
         """
         if not MIN_PLAYERS <= num_players <= MAX_PLAYERS:
             raise ValueError(
@@ -96,6 +102,7 @@ class GameState:
             )
 
         self.rng = rng if rng is not None else random.Random(seed)
+        self.ruleset = ruleset if ruleset is not None else rulesets.DEFAULT
         self.num_players = num_players
         self.board = board if board is not None else Board(rng=self.rng)
 
@@ -138,6 +145,10 @@ class GameState:
         #: Whether the dice have been rolled this turn. A Knight may be played before
         #: rolling, so the robber phase needs to know where to return to.
         self.rolled_this_turn = False
+
+        #: The Balanced Dice deck, or None when the ruleset rolls plain dice. Hidden
+        #: information, like the development deck.
+        self.dice_deck = dice.new_deck(self.rng) if self.ruleset.balanced_dice else None
 
         #: Award holders, or None. Each is worth 2 victory points.
         self.largest_army_holder = None
@@ -255,6 +266,7 @@ class GameState:
         other = object.__new__(GameState)
 
         other.board = self.board  # immutable, shared on purpose
+        other.ruleset = self.ruleset  # a frozen NamedTuple
         other.num_players = self.num_players
         other.player_order = list(self.player_order)
 
@@ -281,6 +293,7 @@ class GameState:
         other.dev_card_played_this_turn = self.dev_card_played_this_turn
         other.free_roads = self.free_roads
         other.rolled_this_turn = self.rolled_this_turn
+        other.dice_deck = None if self.dice_deck is None else list(self.dice_deck)
         other.largest_army_holder = self.largest_army_holder
         other.longest_road_holder = self.longest_road_holder
 
@@ -301,12 +314,13 @@ class GameState:
     # ------------------------------------------------------------------ #
 
     _COMPARED = (
+        "ruleset",
         "num_players", "player_order", "vertex_owner", "vertex_piece", "edge_owner",
         "hands", "bank", "settlements_left", "cities_left", "roads_left", "phase",
         "setup_step", "last_settlement", "robber_tile", "pending_discards",
         "discards_owed", "turn_number", "last_roll", "winner",
         "dev_deck", "dev_cards", "dev_cards_new", "knights_played",
-        "dev_card_played_this_turn", "free_roads", "rolled_this_turn",
+        "dev_card_played_this_turn", "free_roads", "rolled_this_turn", "dice_deck",
         "largest_army_holder", "longest_road_holder",
     )
 
@@ -327,6 +341,7 @@ class GameState:
 
     def __repr__(self):
         return (
-            f"GameState(players={self.num_players}, phase={self.phase.name}, "
-            f"turn={self.turn_number}, current={self.current_player})"
+            f"GameState({self.ruleset.name}, players={self.num_players}, "
+            f"phase={self.phase.name}, turn={self.turn_number}, "
+            f"current={self.current_player})"
         )

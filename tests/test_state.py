@@ -6,6 +6,7 @@ import pytest
 
 import catan.topology as T
 from catan import rules
+from catan.rulesets import BASE_GAME, RANKED_1V1
 from catan.state import (
     MAX_CITIES,
     MAX_ROADS,
@@ -211,13 +212,33 @@ def test_a_clone_replays_identically_by_default():
 
 
 def test_a_clone_can_share_a_stream_so_rollouts_diverge():
-    """Search wants divergent rollouts, not repeated ones."""
-    state = fresh(seed=4)
+    """Search wants divergent rollouts, not repeated ones.
+
+    Plain dice, because Balanced Dice draws from a deck that the clone copies — see the
+    test below, which is a real consideration for search.
+    """
+    state = fresh(seed=4, ruleset=BASE_GAME)
     complete_setup(state)
 
     a, b = state.clone(rng=state.rng), state.clone(rng=state.rng)
     assert a.rng is b.rng is state.rng
     assert roll_sequence(a, 20) != roll_sequence(b, 20)
+
+
+def test_with_balanced_dice_a_clone_replays_the_same_rolls_even_sharing_the_rng():
+    """The Balanced Dice deck is copied on clone, so the next ~24 rolls are already
+    determined — sharing the RNG does not change them.
+
+    Correct: the deck is hidden information, not a fresh die roll. But it means search
+    cannot get divergent rollouts from the RNG alone. To sample futures it has to reshuffle
+    the unseen remainder of `dice_deck` itself, which is Phase 3 belief-sampling work.
+    """
+    state = fresh(seed=4, ruleset=RANKED_1V1)
+    complete_setup(state)
+    assert state.dice_deck is not None
+
+    a, b = state.clone(rng=state.rng), state.clone(rng=state.rng)
+    assert roll_sequence(a, 20) == roll_sequence(b, 20)
 
 
 def test_equality_ignores_the_random_stream():
