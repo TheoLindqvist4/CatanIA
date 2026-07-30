@@ -19,10 +19,10 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
 | **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
-| **3** | AI surface (action space, observations, env) | ⬜ next |
+| **3** | AI surface (action space, observations, env) | 🔶 **in progress** — action space done |
 | **4** | Interfaces (CLI, web API) | ⬜ not started |
 
-457 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+484 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -44,6 +44,7 @@ catan/
                    #    hands, supplies, phase, turn.  clone() / __eq__
   actions.py       # ✅ Action = (type, position, extra)
   rules.py         # ✅ legal_actions / apply — the single legality authority
+  action_space.py  # ✅ 324 flat indices + legal_mask(state)
   encoder.py       #    Phase 3: to_vector(state, perspective_player), hidden-info masked
   env.py           #    Phase 3: Gymnasium-style reset(seed) / step(action)
   agents/          #    Phase 3: random, heuristic, then the network
@@ -240,9 +241,13 @@ adding 3–4 player training or human play.
 
 ## Phase 3 — AI surface ⬜
 
-- [ ] `actions.py`: flat discrete codec on top of the existing `Action`, plus
-      `legal_action_mask() -> bool[N]`. e.g. `0` end turn · `1..72` road · `73..126` settlement ·
-      `127..180` city · `181` buy dev · dev-card plays · 19 robber placements · discards · trades.
+- [x] **`action_space.py`**: **324** flat indices, in contiguous blocks by action type, plus
+      `legal_mask(state) -> bytearray`. The size is independent of the player count, so a network
+      trained on 1v1 has the same output shape as one on four players. The mask is *translated*
+      from `rules.legal_actions`, never re-derived — a second legality authority is the exact bug
+      the engine was rebuilt to remove. Costs +2% over `legal_actions`.
+      The load-bearing test asserts every action the rules can ever offer is expressible: if one
+      were not, the mask would drop it silently and an agent could never choose it.
 - [ ] `encoder.py`: fixed-length observation, perspective-rotated, hidden-info masked.
 - [ ] `env.py`: `reset(seed)` / `step(action) -> (obs, reward, done, info)`, auto-rolling in the
       `ROLL` phase; `clone(rng=state.rng)` for MCTS.
