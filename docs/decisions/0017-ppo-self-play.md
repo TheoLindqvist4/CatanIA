@@ -111,7 +111,25 @@ transitions, 68 minutes, `lr 1e-4`, `entropy 5e-3`:
 | 199 | 54.4% |
 | 299 | 55.8% |
 
-The final policy, on **1,000 games** (±3.1 points — 200 games gives ±7, which cannot tell
+### Where it ended up
+
+Those numbers are the *flat* network. Replacing it with
+[the structured one](0021-structure-aware-network.md) and giving the observation
+[a memory](0019-cache-the-board-static-observation.md) moved it decisively past the
+heuristic — 1,000 games, `HeuristicAgent(noise=0)`:
+
+| opponent | result | rate | 95% CI |
+|---|---|---|---|
+| heuristic (`hard`) | 735 – 253 | **74.4%** | [71.6, 77.0] |
+| heuristic (`medium`) | 374 – 26 | 93.5% | [90.6, 95.5] |
+| greedy | 400 – 0 | **100.0%** | [99.0, 100.0] |
+| random | 400 – 0 | **100.0%** | [99.0, 100.0] |
+
+Total cost: about four minutes of cloning and 29 minutes of fine-tuning on CPU.
+
+### The flat network, for the record
+
+The final flat policy, on **1,000 games** (±3.1 points — 200 games gives ±7, which cannot tell
 parity from an edge):
 
 | opponent | result | rate | 95% CI |

@@ -261,19 +261,22 @@ dérouler ; ici `clone()` copie la pioche de développement, le paquet de dés e
 l'adversaire *à l'identique*, donc une simulation rejoue le même futur au lieu d'en
 échantillonner un. L'échantillonnage de croyances est un prérequis, et il n'est pas écrit.
 
-**Ce qui est mesuré.** Le clonage atteint 30.8% contre l'heuristique en quatre minutes ;
-l'affinage par PPO monte ensuite à la parité en 68 minutes de CPU. Sur 1 000 parties :
+**Ce qui est mesuré.** L'agent entraîné est désormais **le joueur le plus fort du projet**.
+Sur 1 000 parties, sièges inversés :
 
 | adversaire | résultat | taux | IC 95% |
 |---|---|---|---|
-| heuristique `hard` | 507 – 467 | **52.1%** | [48.9, 55.2] |
-| heuristique `medium` | 299 – 97 | 75.5% | [71.0, 79.5] |
-| `greedy` | 399 – 1 | 99.8% | [98.6, 100.0] |
-| `random` | 399 – 1 | 99.8% | [98.6, 100.0] |
+| heuristique `hard` | 735 – 253 | **74.4%** | [71.6, 77.0] |
+| heuristique `medium` | 374 – 26 | 93.5% | [90.6, 95.5] |
+| `greedy` | 400 – 0 | **100.0%** | [99.0, 100.0] |
+| `random` | 400 – 0 | **100.0%** | [99.0, 100.0] |
 
-L'intervalle contient 50% : c'est donc une **parité**, pas une victoire démontrée. Contre tout
-ce qui est plus faible, l'agent entraîné domine nettement — 99.8% contre `greedy`, là où
-l'heuristique elle-même fait 96.7%. `hard` reste l'adversaire par défaut.
+Environ 33 minutes de CPU : quatre pour cloner l'heuristique, 29 pour l'affiner. Le chemin a
+compté plus que le budget — la première tentative, avec un réseau dense, a mis 68 minutes pour
+atteindre la parité (52.1%) sans jamais la dépasser.
+
+`learned` est l'adversaire par défaut lorsque `checkpoints/policy.pt` existe ; sinon on
+retombe sur `hard`.
 
 Détails et limites : [décision 0017](docs/decisions/0017-ppo-self-play.md),
 [décision 0018](docs/decisions/0018-clone-before-self-play.md).

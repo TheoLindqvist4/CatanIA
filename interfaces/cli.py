@@ -359,7 +359,8 @@ def main(argv=None):
         prog="python -m interfaces.cli",
         description="Play or watch a game of Catan.",
     )
-    parser.add_argument("--agents", nargs="+", default=["human", "hard"],
+    parser.add_argument("--agents", nargs="+",
+                        default=["human", "learned" if "learned" in AGENTS else "hard"],
                         metavar="AGENT",
                         help=f"one per seat: {', '.join(AGENTS)} (default: human hard)")
     parser.add_argument("--seed", type=int, default=None, help="reproduces a whole game")

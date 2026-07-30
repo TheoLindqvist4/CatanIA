@@ -482,34 +482,58 @@ beat random" but "can it beat 96.7%-against-greedy".
 
 ### Where it stands
 
-The learned policy reached **parity with the heuristic** — 52.1%, and the interval includes
-50%, so it is not a demonstrated win. Against everything weaker it is clearly stronger: 99.8%
-against greedy, where the heuristic itself scores 96.7%.
+**The learned policy is now the strongest player in the project.** 1,000 games against
+`HeuristicAgent(noise=0)`:
 
-`hard` stays the default opponent, because parity is not an improvement and the heuristic is
-cheaper and easier to reason about. The policy is offered as `learned` in both interfaces
-whenever `checkpoints/policy.pt` exists.
+      vs heuristic hard      735-253   74.4%  [71.6, 77.0]
+      vs heuristic medium    374- 26   93.5%  [90.6, 95.5]
+      vs greedy              400-  0  100.0%  [99.0, 100.0]
+      vs random              400-  0  100.0%  [99.0, 100.0]
 
-Getting there took 68 minutes of CPU: cloning to 30.8% in four, then fine-tuning. From-scratch
-self-play over a comparable budget reached 37.2%.
+It is the default opponent in both interfaces whenever `checkpoints/policy.pt` exists —
+which is not in git, so a fresh clone (or one without PyTorch) falls back to `hard`.
 
-### What is actually in the way
+Getting there took about 33 minutes of CPU: four to clone the heuristic, 29 to fine-tune.
+The path mattered more than the budget — the first flat-network attempt spent 68 minutes to
+reach parity (52.1%) and could not get past it.
 
-Ranked by evidence, not by appeal:
+### What was in the way, and what it turned out to be worth
 
-- [ ] **The observation has no history.** It is a pure snapshot — nothing records what the
-      opponent discarded, bought or built over time. "They have hoarded ore for three turns"
-      is not representable. This is the hardest ceiling and it is an *observation* problem.
-- [ ] **The network is an MLP over a flat 1808-vector.** That vertex 23 neighbours vertex 24 is
-      never given to it, though `topology.py` knows. The tiles section is 27% of the input and
-      constant within a game, so a flat first layer can spend capacity on board identity —
-      the cloning train/test gap (87% vs 71%) is that effect. A graph network over the
-      vertex/road structure is the obvious next architecture.
-- [ ] **The rollout is single-process.** Measured 3,327 env steps/sec on one worker versus
-      22,377 across 16 of 20 cores. Everything is picklable and Windows `spawn` is verified;
-      this is 4-8x more data for the same wall-clock and is the cheapest remaining win.
-- [ ] **No lookahead.** A 1-ply expectation over the dice using the value head needs no belief
-      sampling and would cost one forward pass per candidate.
+All four items were implemented and measured. Ranked by what they actually delivered rather
+than by what was expected:
+
+- [x] **The network was the binding constraint.** An MLP over the flat 1808-vector had to
+      rediscover board geometry `topology.py` already knows, and could spend the constant
+      tiles block on memorising board identity. `training/structured_net.py` shares weights
+      across all 54 vertices / 72 roads / 19 tiles and produces per-position logits from each
+      position's own embedding. Held-out cloning agreement **69.6% -> 80.3%**, train/test gap
+      **13.9 -> 2.2 points**, with 7.3x fewer parameters. Fine-tuned, it went from the flat
+      network's 52.1% against the heuristic to **77.6%**.
+      See [decision 0021](docs/decisions/0021-structure-aware-network.md).
+- [x] **The observation had no memory.** Five counters — roll histogram, cumulative production
+      and spending per player, development cards bought, turns since last build — rotated per
+      seat. `SIZE` 1808 -> 1868. Deliberately *not* a per-player hand estimate: a robber steal
+      moves a card whose identity only the two players involved ever learn, so any running
+      total of an opponent's hand would be either wrong or a leak.
+- [x] **The rollout was single-process.** Now **1,879 -> 23,599 transitions/sec** across 16
+      workers; iteration time 10-12s -> 1.5-3s.
+      See [decision 0020](docs/decisions/0020-parallel-rollouts-and-lookahead.md).
+- [x] **One-ply lookahead — no measurable gain.** Implemented and leak-safe: `clone()` copies
+      the dev deck, the dice deck and opponents' hands verbatim, so `DETERMINISTIC_TYPES` is a
+      correctness boundary excluding the five action types whose application would reveal
+      hidden state. At 800 games it scores 53.4% against 52.2% for no search — intervals
+      overlapping almost entirely. Kept, off by default. Recorded rather than quietly dropped,
+      because an unwritten negative result gets re-attempted.
+
+### Still open
+
+- [ ] **Belief sampling.** Every remaining idea that involves search needs it: a rollout past
+      one ply requires the opponent's reply, which requires their hand. `clone()` replays the
+      same hidden future rather than sampling one, which is correct and is exactly the
+      obstacle.
+- [ ] **A stronger critic.** The structured network's value head is worse than the flat one's
+      (MAE 0.210 against 0.074) — the one place the old architecture still wins, and the
+      likely reason lookahead buys nothing.
 
 ## What this deliberately does not include
 

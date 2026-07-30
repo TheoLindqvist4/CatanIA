@@ -78,6 +78,11 @@ def _register_learned():
 
 _register_learned()
 
+#: The strongest opponent available. The trained policy beats the heuristic 74.4% of the
+#: time, so it is the default — but it ships as a file under ``checkpoints/``, which is not
+#: in git, so a fresh clone (or one without PyTorch) falls back to the heuristic.
+DEFAULT_OPPONENT = "learned" if "learned" in OPPONENTS else "hard"
+
 #: Board art, keyed the way the client asks for it.
 TILE_IMAGES = {
     Resource.WOOD: "wood", Resource.BRICK: "brick", Resource.SHEEP: "sheep",
@@ -104,7 +109,8 @@ class Game:
 
     _ids = itertools.count(1)
 
-    def __init__(self, opponent="hard", rules_name="ranked1v1", seed=None):
+    def __init__(self, opponent=None, rules_name="ranked1v1", seed=None):
+        opponent = DEFAULT_OPPONENT if opponent is None else opponent
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
         if rules_name not in RULESETS:
@@ -400,7 +406,7 @@ class Games:
     def __init__(self):
         self._games = {}
 
-    def new(self, opponent="hard", rules_name="ranked1v1", seed=None):
+    def new(self, opponent=None, rules_name="ranked1v1", seed=None):
         game = Game(opponent=opponent, rules_name=rules_name, seed=seed)
         self._games[game.id] = game
         return game
