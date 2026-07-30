@@ -18,11 +18,11 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 |---|---|---|
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
-| **2** | Complete the rules | 🔶 **in progress** — bank, trading, robber done |
-| **3** | AI surface (action space, observations, env) | ⬜ not started |
+| **2** | Complete the rules | ✅ **done** |
+| **3** | AI surface (action space, observations, env) | ⬜ next |
 | **4** | Interfaces (CLI, web API) | ⬜ not started |
 
-363 tests. `python -m pytest -m "not slow"` runs the fast ones in ~3s.
+417 tests. `python -m pytest -m "not slow"` runs the fast ones in ~5s.
 
 ---
 
@@ -168,7 +168,7 @@ all collapsed into a single bit.
 message raised *because* the type was bogus. And `GameState.__eq__` required board *identity*, so
 replaying a seed compared unequal; `Board` now has value equality and a hash.
 
-## Phase 2 — Complete the rules 🔶
+## Phase 2 — Complete the rules ✅
 
 Trading was moved to the front of this phase because Phase 1 measured only **4 of 40** random
 games reaching 10 points: a settlement needs four *different* resources, most players' buildings
@@ -199,11 +199,19 @@ almost always zero.
       it and that no official coastal-edge list is published —
       [decision 0010](docs/decisions/0010-harbour-placement.md). 280 distinct position sets,
       gaps always 3 or 4 roads so they never cluster.
-- [ ] **Dev cards**: 25-card deck, buy / hold / play-timing (one per turn, not the turn bought).
-      Knight, Road Building, Year of Plenty, Monopoly, Victory Point.
-- [ ] **Largest Army** (3+ knights, 2 VP), including keep-until-beaten.
-- [ ] **Longest Road award**: the 5-segment minimum, the 2 VP, and keep-until-beaten.
-      The *measurement* is done — `rules.longest_road_length` and `rules.longest_road_holder`.
+- [x] **Development cards**: the 25-card deck, buying, and both timing rules — one per turn,
+      and not the turn you bought it. All five cards, including play *before* rolling, which is
+      how a Knight blocks a tile before it produces. Victory Point cards are never played: they
+      count while held and stay hidden, so `public_victory_points` exists alongside
+      `victory_points` for what an opponent can see.
+      → [decision 0012](docs/decisions/0012-development-card-modelling.md)
+- [x] **Largest Army** (3+ knights) and **Longest Road** (5+ segments), 2 points each, sharing
+      one implementation: a minimum to qualify, sole leadership to take it, holder keeps it on a
+      tie. Rechecked after *every* build — a settlement can break an opponent's road and take
+      Longest Road off them.
+      → **40 of 40** random games finish, median 349 turns. Largest Army is held in 39 and
+      Longest Road in 37, so both are contested. Winners' points: buildings 203, VP cards 92,
+      army 58, road 50.
 - [ ] **Official spiral layout** as an alternative to balanced generation, behind a config flag.
       The house rule makes double-production vertices impossible, so an agent trained only on it
       never learns to value a "double 6" spot —

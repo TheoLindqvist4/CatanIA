@@ -22,20 +22,35 @@ No I/O, and no use of the global ``random`` module.
 
 from catan import resources
 from catan.actions import (
+    DEV_CARD_PLAYS,
     Action,
     ActionType,
     build_city,
     build_road,
     build_settlement,
+    buy_dev_card,
     discard,
     end_turn,
     move_robber,
+    play_knight,
+    play_monopoly,
+    play_road_building,
+    play_year_of_plenty,
     trade_with_bank,
 )
 from catan.board import GENERIC_HARBOUR, ROBBER_ROLL
+from catan.dev_cards import (
+    AWARD_VICTORY_POINTS,
+    LARGEST_ARMY_MINIMUM,
+    LONGEST_ROAD_MINIMUM,
+    PLAYABLE,
+    ROAD_BUILDING_ROADS,
+    DevCard,
+)
 from catan.resources import (
     BANK_RATE,
     CITY_COST,
+    DEV_CARD_COST,
     GENERIC_HARBOUR_RATE,
     NUM_RESOURCES,
     ROAD_COST,
@@ -112,12 +127,14 @@ def can_build_road(state, player, road):
     junction the player can build through — that is, it holds no *opponent* building and
     has one of the player's roads. An opponent's building blocks a road from being
     extended past it.
+
+    While Road Building is in effect (``state.free_roads``) the cost is waived.
     """
     if not state.is_road_free(road):
         return False
     if state.roads_left[player] <= 0:
         return False
-    if not resources.can_afford(state.hands[player], ROAD_COST):
+    if state.free_roads <= 0 and not resources.can_afford(state.hands[player], ROAD_COST):
         return False
     return any(
         _connects_at(state, player, endpoint) for endpoint in ROAD_VERTICES[road]
@@ -186,6 +203,149 @@ def can_trade_with_bank(state, player, give, take, rates=None):
         return False
     rate = (rates or trade_rates(state, player))[give]
     return state.hands[player][give] >= rate
+
+
+# --------------------------------------------------------------------------- #
+# DEVELOPMENT CARDS                                                           #
+# --------------------------------------------------------------------------- #
+
+def can_buy_dev_card(state, player):
+    """A card must be left in the deck, and the player must afford it."""
+    if not state.dev_deck:
+        return False
+    return resources.can_afford(state.hands[player], DEV_CARD_COST)
+
+
+def playable_dev_cards(state, player):
+    """Cards ``player`` may play right now, as counts indexed by :class:`DevCard`.
+
+    Empty once a card has been played this turn. A card bought this turn is excluded —
+    ``dev_cards_new`` tracks those, and they become playable when the turn ends. Victory
+    Point cards never appear: they are never played, only held.
+    """
+    if state.dev_card_played_this_turn:
+        return [0] * len(state.dev_cards[player])
+    held, fresh = state.dev_cards[player], state.dev_cards_new[player]
+    return [
+        held[card] - fresh[card] if card in PLAYABLE else 0
+        for card in range(len(held))
+    ]
+
+
+def can_play_dev_card(state, player, card):
+    """Whether ``player`` holds a playable ``card``, ignoring its own preconditions."""
+    if not 0 <= card < len(state.dev_cards[player]):
+        return False
+    return playable_dev_cards(state, player)[card] > 0
+
+
+def can_play_year_of_plenty(state, player, first, second):
+    """Both resources must be drawable from the bank — two of the same needs two left.
+
+    The pair must be in ascending order. Ore-then-wheat and wheat-then-ore are the same
+    move, so only one of them is a legal action; :func:`catan.actions.play_year_of_plenty`
+    sorts for you.
+    """
+    if not can_play_dev_card(state, player, DevCard.YEAR_OF_PLENTY):
+        return False
+    if not (0 <= first < NUM_RESOURCES and 0 <= second < NUM_RESOURCES):
+        return False
+    if first > second:
+        return False
+    needed = [0] * NUM_RESOURCES
+    needed[first] += 1
+    needed[second] += 1
+    return all(state.bank[r] >= needed[r] for r in range(NUM_RESOURCES))
+
+
+def can_play_monopoly(state, player, resource):
+    return (
+        can_play_dev_card(state, player, DevCard.MONOPOLY)
+        and 0 <= resource < NUM_RESOURCES
+    )
+
+
+def can_play_road_building(state, player):
+    """Needs a road piece left and somewhere legal to put one.
+
+    Checked with the cost waived, since the card is what pays.
+    """
+    if not can_play_dev_card(state, player, DevCard.ROAD_BUILDING):
+        return False
+    if state.roads_left[player] <= 0:
+        return False
+    state.free_roads += 1  # probe as if the card were already in effect
+    try:
+        return any(
+            can_build_road(state, player, road)
+            for road in range(1, NUM_ROADS + 1)
+        )
+    finally:
+        state.free_roads -= 1
+
+
+def dev_card_actions(state, player):
+    """Every development-card play available to ``player`` right now."""
+    actions = []
+    if can_play_dev_card(state, player, DevCard.KNIGHT):
+        actions.append(play_knight())
+    if can_play_road_building(state, player):
+        actions.append(play_road_building())
+    if can_play_dev_card(state, player, DevCard.YEAR_OF_PLENTY):
+        actions += [
+            play_year_of_plenty(first, second)
+            for first in range(NUM_RESOURCES)
+            for second in range(first, NUM_RESOURCES)
+            if can_play_year_of_plenty(state, player, first, second)
+        ]
+    if can_play_dev_card(state, player, DevCard.MONOPOLY):
+        actions += [play_monopoly(r) for r in range(NUM_RESOURCES)]
+    return actions
+
+
+# --------------------------------------------------------------------------- #
+# AWARDS: LARGEST ARMY AND LONGEST ROAD                                       #
+# --------------------------------------------------------------------------- #
+
+def _update_award(current, scores, minimum):
+    """Who holds an award after ``scores`` change.
+
+    Both awards work the same way: you need at least ``minimum``, you need to be the
+    sole leader to take it from someone, and the holder keeps it on a tie. If the holder
+    drops behind and the new best is tied, nobody holds it until someone is clearly
+    ahead.
+    """
+    holder = current
+    if holder is not None and scores[holder] < minimum:
+        holder = None
+
+    best = max(scores.values(), default=0)
+    if best < minimum:
+        return None
+    if holder is not None and scores[holder] >= best:
+        return holder
+
+    leaders = sorted(p for p, score in scores.items() if score == best)
+    return leaders[0] if len(leaders) == 1 else None
+
+
+def update_awards(state):
+    """Recompute both award holders.
+
+    Called after anything that can change them — building a road, but also building a
+    settlement or city, which can *break* an opponent's road and take Longest Road off
+    them.
+    """
+    state.largest_army_holder = _update_award(
+        state.largest_army_holder,
+        {p: state.knights_played[p] for p in state.players},
+        LARGEST_ARMY_MINIMUM,
+    )
+    state.longest_road_holder = _update_award(
+        state.longest_road_holder,
+        {p: longest_road_length(state, p) for p in state.players},
+        LONGEST_ROAD_MINIMUM,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -288,6 +448,12 @@ def legal_actions(state):
             actions += [move_robber(tile, victim) for victim in (options or (0,))]
         return actions
 
+    if state.phase is Phase.ROLL:
+        # A development card may be played *before* rolling — most usefully a Knight, to
+        # block a tile before it produces. The driver still calls roll_dice() to roll;
+        # this list is what may be done first, and is usually empty.
+        return dev_card_actions(state, player)
+
     if state.phase is Phase.BUILD:
         actions = [end_turn()]
         actions += [
@@ -312,9 +478,12 @@ def legal_actions(state):
             for take in range(NUM_RESOURCES)
             if can_trade_with_bank(state, player, give, take, rates)
         ]
+        if can_buy_dev_card(state, player):
+            actions.append(buy_dev_card())
+        actions += dev_card_actions(state, player)
         return actions
 
-    return []  # ROLL, GAME_OVER
+    return []  # GAME_OVER
 
 
 def is_legal(state, action):
@@ -347,7 +516,10 @@ def apply(state, action):
     elif state.phase is Phase.BUILD:
         _apply_build(state, player, action)
     elif state.phase is Phase.ROLL:
-        raise IllegalAction("must roll the dice before acting")
+        # Only a development card may be played before rolling.
+        if action.type not in DEV_CARD_PLAYS:
+            raise IllegalAction(f"must roll the dice before {action!r}")
+        _apply_dev_card(state, player, action)
     else:
         raise IllegalAction("the game is over")
 
@@ -386,7 +558,10 @@ def _apply_move_robber(state, player, action):
     state.robber_tile = tile
     if victim:
         _steal_one_card(state, player, victim)
-    state.phase = Phase.BUILD
+
+    # A Knight can send us here before the dice are rolled, in which case the player
+    # still has a roll coming.
+    state.phase = Phase.BUILD if state.rolled_this_turn else Phase.ROLL
 
 
 def _steal_one_card(state, thief, victim):
@@ -451,10 +626,83 @@ def _advance_setup(state):
         state.phase = Phase.SETUP_SETTLEMENT
 
 
+def _apply_dev_card(state, player, action):
+    """Play one development card. Valid in both ROLL and BUILD."""
+    if action.type is ActionType.PLAY_KNIGHT:
+        if not can_play_dev_card(state, player, DevCard.KNIGHT):
+            raise IllegalAction("no Knight available to play")
+        _spend_dev_card(state, player, DevCard.KNIGHT)
+        state.knights_played[player] += 1
+        update_awards(state)
+        state.phase = Phase.MOVE_ROBBER
+        # The robber move itself can win the game via Largest Army.
+        _check_for_winner(state, player)
+        return
+
+    if action.type is ActionType.PLAY_ROAD_BUILDING:
+        if not can_play_road_building(state, player):
+            raise IllegalAction("cannot play Road Building")
+        _spend_dev_card(state, player, DevCard.ROAD_BUILDING)
+        # Granted as credit rather than forced placements, so the player may interleave
+        # other actions. Unused credit lapses at the end of the turn.
+        state.free_roads += ROAD_BUILDING_ROADS
+        return
+
+    if action.type is ActionType.PLAY_YEAR_OF_PLENTY:
+        first, second = action.position, action.extra
+        if not can_play_year_of_plenty(state, player, first, second):
+            raise IllegalAction(f"cannot {action!r}")
+        _spend_dev_card(state, player, DevCard.YEAR_OF_PLENTY)
+        for resource in (first, second):
+            state.hands[player][resource] += 1
+            state.bank[resource] -= 1
+        return
+
+    if action.type is ActionType.PLAY_MONOPOLY:
+        resource = action.position
+        if not can_play_monopoly(state, player, resource):
+            raise IllegalAction(f"cannot {action!r}")
+        _spend_dev_card(state, player, DevCard.MONOPOLY)
+        for other in state.players:
+            if other == player:
+                continue
+            taken = state.hands[other][resource]
+            state.hands[other][resource] = 0
+            state.hands[player][resource] += taken
+        return
+
+    raise IllegalAction(f"not a development card play: {action!r}")
+
+
+def _spend_dev_card(state, player, card):
+    state.dev_cards[player][card] -= 1
+    state.dev_card_played_this_turn = True
+
+
 def _apply_build(state, player, action):
     if action.type is ActionType.END_TURN:
         state.turn_number += 1
         state.phase = Phase.ROLL
+        state.dev_card_played_this_turn = False
+        state.rolled_this_turn = False
+        state.free_roads = 0  # unused Road Building credit lapses
+        # Cards bought this turn become playable now.
+        state.dev_cards_new[player] = [0] * len(state.dev_cards_new[player])
+        return
+
+    if action.type in DEV_CARD_PLAYS:
+        _apply_dev_card(state, player, action)
+        return
+
+    if action.type is ActionType.BUY_DEV_CARD:
+        if not can_buy_dev_card(state, player):
+            raise IllegalAction("cannot buy a development card")
+        _pay(state, player, DEV_CARD_COST)
+        card = state.dev_deck.pop()
+        state.dev_cards[player][card] += 1
+        state.dev_cards_new[player][card] += 1
+        # A Victory Point card can win the game the moment it is drawn.
+        _check_for_winner(state, player)
         return
 
     if action.type is ActionType.TRADE_WITH_BANK:
@@ -473,7 +721,10 @@ def _apply_build(state, player, action):
         road = _check_road(action.position)
         if not can_build_road(state, player, road):
             raise IllegalAction(f"cannot build a road at {road}")
-        _pay(state, player, ROAD_COST)
+        if state.free_roads > 0:
+            state.free_roads -= 1  # paid for by Road Building
+        else:
+            _pay(state, player, ROAD_COST)
         _put_road(state, player, road)
 
     elif action.type is ActionType.BUILD_SETTLEMENT:
@@ -495,6 +746,9 @@ def _apply_build(state, player, action):
     else:
         raise IllegalAction(f"unknown action {action!r}")
 
+    # Any build can change Longest Road — a road by extending one, a settlement or city
+    # by *breaking* an opponent's.
+    update_awards(state)
     _check_for_winner(state, player)
 
 
@@ -555,6 +809,7 @@ def roll_dice(state):
 
     roll = state.rng.randint(1, DICE_FACES) + state.rng.randint(1, DICE_FACES)
     state.last_roll = roll
+    state.rolled_this_turn = True
 
     if roll == ROBBER_ROLL:
         begin_robber(state)
@@ -640,16 +895,29 @@ def distribute(state, roll):
 # --------------------------------------------------------------------------- #
 
 def victory_points(state, player):
-    """Points from buildings: 1 per settlement, 2 per city.
+    """Total victory points: buildings, both awards, and Victory Point cards.
 
-    Derived from the board rather than kept as a counter, so it cannot drift out of
-    sync. Phase 2 adds Longest Road, Largest Army and victory-point dev cards.
+    1 per settlement, 2 per city, 2 for Largest Army, 2 for Longest Road, and 1 per
+    Victory Point card held. Derived rather than kept as a counter, so it cannot drift.
+
+    Victory Point cards count while *held* — they are never played, and stay hidden from
+    opponents until they win the game. Phase 3's encoder has to mask them.
     """
-    return sum(
+    points = sum(
         PIECE_VICTORY_POINTS[state.vertex_piece[vertex]]
         for vertex in range(1, NUM_VERTICES + 1)
         if state.vertex_owner[vertex] == player
     )
+    if state.largest_army_holder == player:
+        points += AWARD_VICTORY_POINTS
+    if state.longest_road_holder == player:
+        points += AWARD_VICTORY_POINTS
+    return points + state.dev_cards[player][DevCard.VICTORY_POINT]
+
+
+def public_victory_points(state, player):
+    """What opponents can see: everything except hidden Victory Point cards."""
+    return victory_points(state, player) - state.dev_cards[player][DevCard.VICTORY_POINT]
 
 
 def scores(state):

@@ -93,7 +93,13 @@ def drive(state, rng, max_actions=20_000, prefer_building=True, on_step=None):
         if state.phase is Phase.GAME_OVER:
             break
         if state.phase is Phase.ROLL:
-            rules.roll_dice(state)
+            # A development card may be played before rolling. Do so sometimes, so the
+            # fuzzer actually exercises the pre-roll path.
+            pre_roll = rules.legal_actions(state)
+            if pre_roll and rng.random() < 0.3:
+                rules.apply(state, rng.choice(pre_roll))
+            else:
+                rules.roll_dice(state)
         else:
             actions = rules.legal_actions(state)
             if not actions:

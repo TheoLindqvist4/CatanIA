@@ -7,9 +7,10 @@ n'est pas seulement de pouvoir y jouer : c'est d'exposer **l'intégralité de l'
 sous une forme lisible par une machine, afin d'**entraîner une IA** à jouer. L'interface de jeu est
 un *consommateur* du moteur, jamais une partie de celui-ci.
 
-> 🚧 **Projet en cours.** Le moteur (`catan/`) gère une partie complète de bout en bout : mise en
-> place, économie, construction, villes, banque, échange avec les ports, voleur et victoire à 10.
-> Il manque encore les cartes de développement et les deux cartes de bonus (armée / route).
+> ✅ **Le moteur est complet.** `catan/` implémente **toutes les règles du Catan de base**, à la
+> seule exception de l'échange entre joueurs (volontairement hors périmètre pour cette version).
+> Reste à construire la couche destinée à l'IA : espace d'actions, encodage des observations et
+> environnement d'entraînement (phase 3).
 >
 > - **[ROADMAP.md](ROADMAP.md)** — les phases, ce qui est fait et ce qui reste.
 > - **[docs/engine.md](docs/engine.md)** — comment le moteur s'articule et comment piloter une
@@ -19,7 +20,7 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 ## ⭐ État actuel
 
-**Fonctionne** (363 tests) :
+**Fonctionne** (417 tests) :
 
 - 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
   toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
@@ -39,14 +40,20 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
   de distance fait qu'un seul joueur peut en profiter.
 - 🦹 **Le voleur** : gestion du 7, défausse de la moitié de la main au-delà de 7 cartes, blocage de
   la production de sa tuile, et vol d'une carte au hasard.
+- 🃏 **Cartes de développement** : pioche de 25 cartes, achat, et les deux règles de timing
+  (une carte par tour, et pas celle achetée dans le tour). Chevalier, Construction de routes,
+  Année d'abondance, Monopole, et Point de victoire — cette dernière n'est jamais jouée : elle
+  compte tant qu'elle est en main et reste cachée.
+- 🎖️ **Armée la plus puissante** (3 chevaliers) et **route la plus longue** (5 segments),
+  2 points chacune, conservées jusqu'à être strictement dépassées.
 - 🏆 **Points de victoire et victoire à 10.**
 - 🛤️ **Plus longue route** : chemin simple strict, interrompu par une construction adverse.
 - 👥 **2 à 4 joueurs.**
 - 🔁 **Déterminisme** : une partie est entièrement reproductible à partir d'une graine (`seed`).
 
-**Pas encore implémenté :** les cartes de développement, l'armée la plus puissante, l'attribution
-des 2 points de la plus longue route, ainsi que l'espace d'actions et d'observations destiné à
-l'IA. Détails dans [ROADMAP.md](ROADMAP.md).
+**Pas encore implémenté :** l'espace d'actions discret, l'encodage des observations (avec masquage
+de l'information cachée) et l'environnement d'entraînement — phase 3. Détails dans
+[ROADMAP.md](ROADMAP.md).
 
 **Volontairement hors périmètre :** l'échange entre joueurs. La cible est le 1 contre 1, où céder
 des ressources profite au seul adversaire capable de vous battre — et une offre libre est un
@@ -56,7 +63,7 @@ Voir [décision 0011](docs/decisions/0011-no-player-to-player-trading.md).
 > 📈 **L'échange a rendu les parties jouables.** Avant lui, seules **4 parties sur 40** atteignaient
 > 10 points : une colonie coûte quatre ressources différentes, or les colonies d'un joueur n'en
 > atteignent souvent que trois, et sans conversion possible les joueurs restaient bloqués avec plus
-> de 100 cartes inutilisables. Aujourd'hui : **40 parties sur 40** se terminent (393 tours en
+> de 100 cartes inutilisables. Aujourd'hui : **40 parties sur 40** se terminent (349 tours en
 > médiane). Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
 
 ## Plateau du jeu Catan

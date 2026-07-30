@@ -13,6 +13,14 @@ pytestmark = pytest.mark.slow
 
 import catan.topology as T
 from catan import rules
+from catan.dev_cards import (
+    AWARD_VICTORY_POINTS,
+    DECK_SIZE,
+    LARGEST_ARMY_MINIMUM,
+    LONGEST_ROAD_MINIMUM,
+    NUM_DEV_CARDS,
+    DevCard,
+)
 from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, total
 from catan.state import (
     MAX_CITIES,
@@ -129,6 +137,58 @@ def assert_invariants(state):
             f"{state.pending_discards} still owe discards in {state.phase.name}"
     assert all(p in state.players for p in state.pending_discards)
     assert len(set(state.pending_discards)) == len(state.pending_discards)
+
+    # --- development cards are conserved, 25 across the deck and all hands ---
+    in_hands = sum(sum(state.dev_cards[p]) for p in state.players)
+    played = sum(
+        state.knights_played[p] for p in state.players
+    ) + _non_knight_plays(state)
+    assert len(state.dev_deck) + in_hands + played == DECK_SIZE, (
+        f"{len(state.dev_deck)} in deck + {in_hands} held + {played} played "
+        f"!= {DECK_SIZE}"
+    )
+    for player in state.players:
+        assert len(state.dev_cards[player]) == NUM_DEV_CARDS
+        assert all(n >= 0 for n in state.dev_cards[player])
+        assert all(n >= 0 for n in state.dev_cards_new[player])
+        # cards bought this turn are a subset of cards held
+        for card in range(NUM_DEV_CARDS):
+            assert state.dev_cards_new[player][card] <= state.dev_cards[player][card]
+        assert state.knights_played[player] >= 0
+        # a Victory Point card is never played, so none can ever leave a hand
+        assert state.dev_cards_new[player][DevCard.VICTORY_POINT] <= \
+            state.dev_cards[player][DevCard.VICTORY_POINT]
+
+    assert state.free_roads >= 0
+
+    # --- awards are earned, not invented ---
+    if state.largest_army_holder is not None:
+        holder = state.largest_army_holder
+        assert holder in state.players
+        assert state.knights_played[holder] >= LARGEST_ARMY_MINIMUM
+        assert state.knights_played[holder] == max(
+            state.knights_played[p] for p in state.players)
+    if state.longest_road_holder is not None:
+        holder = state.longest_road_holder
+        assert holder in state.players
+        length = rules.longest_road_length(state, holder)
+        assert length >= LONGEST_ROAD_MINIMUM
+        assert length == max(rules.longest_road_length(state, p) for p in state.players)
+
+
+def _non_knight_plays(state):
+    """Road Building, Year of Plenty and Monopoly cards that have left hands.
+
+    Not tracked directly, so derived: the deck's original count of each minus what is
+    still in the deck and in hands.
+    """
+    from catan.dev_cards import DECK_COUNTS
+    missing = 0
+    for card in (DevCard.ROAD_BUILDING, DevCard.YEAR_OF_PLENTY, DevCard.MONOPOLY):
+        remaining = state.dev_deck.count(card)
+        held = sum(state.dev_cards[p][card] for p in state.players)
+        missing += DECK_COUNTS[card] - remaining - held
+    return missing
     for player in state.players:
         assert state.discards_owed[player] >= 0
         if state.discards_owed[player] > 0:
@@ -163,7 +223,8 @@ def test_no_player_ever_goes_into_resource_debt():
             assert all(n >= 0 for n in state.hands[player])
 
 
-def test_victory_points_stay_consistent_with_the_board():
+def test_victory_points_stay_consistent_with_their_parts():
+    """Buildings + both awards + Victory Point cards, computed independently here."""
     for seed in range(GAMES):
         state = play_random_game(seed=seed, max_actions=1200)
         for player in state.players:
@@ -171,7 +232,16 @@ def test_victory_points_stay_consistent_with_the_board():
                 1 if state.vertex_piece[v] is Piece.SETTLEMENT else 2
                 for v in state.buildings_of(player)
             )
+            if state.largest_army_holder == player:
+                expected += AWARD_VICTORY_POINTS
+            if state.longest_road_holder == player:
+                expected += AWARD_VICTORY_POINTS
+            expected += state.dev_cards[player][DevCard.VICTORY_POINT]
+
             assert rules.victory_points(state, player) == expected
+            # what opponents can see excludes only the hidden VP cards
+            assert rules.public_victory_points(state, player) == \
+                expected - state.dev_cards[player][DevCard.VICTORY_POINT]
 
 
 def test_replaying_a_seed_gives_an_identical_game():

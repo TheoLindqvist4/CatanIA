@@ -13,6 +13,11 @@ type                         position                    extra
 ``TRADE_WITH_BANK``          resource given              resource received
 ``MOVE_ROBBER``              tile id                     player to rob, 0 for nobody
 ``DISCARD``                  resource discarded          unused
+``BUY_DEV_CARD``             unused                      unused
+``PLAY_KNIGHT``              unused                      unused
+``PLAY_ROAD_BUILDING``       unused                      unused
+``PLAY_YEAR_OF_PLENTY``      first resource taken        second resource taken
+``PLAY_MONOPOLY``            resource demanded           unused
 ===========================  ==========================  ====================
 
 ``DISCARD`` gives up **one** card at a time. Choosing a whole multiset to discard does not
@@ -44,6 +49,20 @@ class ActionType(IntEnum):
     TRADE_WITH_BANK = 4
     MOVE_ROBBER = 5
     DISCARD = 6
+    BUY_DEV_CARD = 7
+    PLAY_KNIGHT = 8
+    PLAY_ROAD_BUILDING = 9
+    PLAY_YEAR_OF_PLENTY = 10
+    PLAY_MONOPOLY = 11
+
+
+#: Playing one of these consumes the turn's single development card.
+DEV_CARD_PLAYS = frozenset({
+    ActionType.PLAY_KNIGHT,
+    ActionType.PLAY_ROAD_BUILDING,
+    ActionType.PLAY_YEAR_OF_PLENTY,
+    ActionType.PLAY_MONOPOLY,
+})
 
 
 #: Action types that carry a road id in ``position``.
@@ -79,6 +98,14 @@ class Action(NamedTuple):
         if self.type == ActionType.MOVE_ROBBER:
             victim = f", rob {self.extra}" if self.extra else ""
             return f"MOVE_ROBBER(tile {self.position}{victim})"
+        if self.type in (ActionType.BUY_DEV_CARD, ActionType.PLAY_KNIGHT,
+                         ActionType.PLAY_ROAD_BUILDING):
+            return kind
+        if self.type == ActionType.PLAY_YEAR_OF_PLENTY:
+            return (f"PLAY_YEAR_OF_PLENTY({_enum_name(Resource, self.position)}"
+                    f", {_enum_name(Resource, self.extra)})")
+        if self.type == ActionType.PLAY_MONOPOLY:
+            return f"PLAY_MONOPOLY({_enum_name(Resource, self.position)})"
         return f"{kind}({self.position})"
 
 
@@ -120,3 +147,34 @@ def move_robber(tile, victim=0):
 def discard(resource):
     """Give up one card of ``resource``."""
     return Action(ActionType.DISCARD, int(resource))
+
+
+def buy_dev_card():
+    """Draw the top development card, for one sheep, one wheat and one ore."""
+    return Action(ActionType.BUY_DEV_CARD)
+
+
+def play_knight():
+    """Play a Knight: move the robber, and count toward Largest Army."""
+    return Action(ActionType.PLAY_KNIGHT)
+
+
+def play_road_building():
+    """Play Road Building: two roads at no cost."""
+    return Action(ActionType.PLAY_ROAD_BUILDING)
+
+
+def play_year_of_plenty(first, second):
+    """Play Year of Plenty: take two resources from the bank. May be the same twice.
+
+    The pair is sorted, because taking ore and wheat is the same as taking wheat and
+    ore. One action per distinct outcome keeps Phase 3's flat action space from carrying
+    two indices for the same move, and keeps ``legal_actions`` and ``apply`` in agreement.
+    """
+    low, high = sorted((int(first), int(second)))
+    return Action(ActionType.PLAY_YEAR_OF_PLENTY, low, high)
+
+
+def play_monopoly(resource):
+    """Play Monopoly: every opponent hands over all their ``resource``."""
+    return Action(ActionType.PLAY_MONOPOLY, int(resource))

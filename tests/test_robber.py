@@ -30,6 +30,7 @@ def at_seven(state):
     discard count is decided in exactly one place now.
     """
     state.last_roll = ROBBER_ROLL
+    state.rolled_this_turn = True  # a 7 comes from a roll
     rules.begin_robber(state)
     return state
 
@@ -479,18 +480,37 @@ def test_a_real_seven_resolves_all_the_way_to_build():
 
 
 def test_hands_never_exceed_the_limit_once_a_seven_has_been_resolved():
-    from helpers import play_random_game
+    """Checked at the moment the discards finish, not merely in MOVE_ROBBER.
 
-    def check(state):
-        if state.phase is Phase.MOVE_ROBBER:
-            for player in state.players:
-                assert total(state.hands[player]) <= HAND_LIMIT, (
-                    f"player {player} still holds {total(state.hands[player])} "
-                    "after discards"
-                )
+    A Knight also reaches MOVE_ROBBER, and nobody discards for a Knight — so the phase
+    alone says nothing about hand sizes.
+    """
+    sevens = 0
+    for seed in range(6):
+        state = fresh(num_players=3, seed=seed)
+        complete_setup(state)
+        rng = random.Random(seed)
 
-    for seed in range(8):
-        play_random_game(seed=seed, num_players=3, max_actions=1500, on_step=check)
+        for _ in range(1500):
+            if state.phase is Phase.GAME_OVER:
+                break
+            if state.phase is Phase.ROLL:
+                if rules.roll_dice(state) == ROBBER_ROLL:
+                    sevens += 1
+                    while state.phase is Phase.DISCARD:
+                        rules.apply(state, rng.choice(rules.legal_actions(state)))
+                    for player in state.players:
+                        assert total(state.hands[player]) <= HAND_LIMIT, (
+                            f"player {player} still holds "
+                            f"{total(state.hands[player])} after discards"
+                        )
+                continue
+            actions = rules.legal_actions(state)
+            if not actions:
+                break
+            rules.apply(state, rng.choice(actions))
+
+    assert sevens > 10, f"only {sevens} sevens across the sample"
 
 
 # --------------------------------------------------------------------------- #

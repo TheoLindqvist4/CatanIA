@@ -36,40 +36,83 @@ from helpers import (
 # THE CENTRAL GUARANTEE                                                       #
 # =========================================================================== #
 
-def test_apply_accepts_exactly_what_legal_actions_offers():
+def every_possible_action():
+    """Every action the game can express, legal or not.
+
+    Enumerated exhaustively so `apply` can be checked against `legal_actions` over the
+    whole space rather than a sample — which is what catches an action that one accepts
+    and the other never offers.
+    """
+    from catan.actions import (
+        buy_dev_card,
+        discard,
+        move_robber,
+        play_knight,
+        play_monopoly,
+        play_road_building,
+        play_year_of_plenty,
+    )
+    from catan.resources import NUM_RESOURCES
+
+    actions = [end_turn(), buy_dev_card(), play_knight(), play_road_building()]
+    actions += [build_road(r) for r in range(1, T.NUM_ROADS + 1)]
+    actions += [build_settlement(v) for v in range(1, T.NUM_VERTICES + 1)]
+    actions += [build_city(v) for v in range(1, T.NUM_VERTICES + 1)]
+    actions += [
+        rules.trade_with_bank(give, take)
+        for give in range(NUM_RESOURCES)
+        for take in range(NUM_RESOURCES)
+    ]
+    actions += [discard(r) for r in range(NUM_RESOURCES)]
+    actions += [
+        move_robber(tile, victim)
+        for tile in range(1, T.NUM_TILES + 1)
+        for victim in range(0, 5)
+    ]
+    actions += [play_monopoly(r) for r in range(NUM_RESOURCES)]
+    actions += [
+        play_year_of_plenty(a, b)
+        for a in range(NUM_RESOURCES)
+        for b in range(NUM_RESOURCES)
+    ]
+    return actions
+
+
+ALL_ACTIONS = every_possible_action()
+
+
+@pytest.mark.parametrize("num_players", [2, 3])
+def test_apply_accepts_exactly_what_legal_actions_offers(num_players):
     """The old bug: `check_valid_*` computed legal moves and `place_*` ignored them, so
-    `place_road(p, 70)` succeeded on an empty board. One authority now."""
+    `place_road(p, 70)` succeeded on an empty board. One authority now.
+
+    Checked over the *whole* action space at every step, in both directions.
+    """
     rng = random.Random(0)
-    state = fresh(seed=1)
+    state = fresh(num_players=num_players, seed=1)
     complete_setup(state, rng)
 
-    for _ in range(400):
+    for _ in range(150):
         if state.phase is Phase.GAME_OVER:
             break
-        if state.phase is Phase.ROLL:
+        if state.phase is Phase.ROLL and not rules.legal_actions(state):
             rules.roll_dice(state)
             continue
-        offered = rules.legal_actions(state)
-        assert offered, f"no legal action in {state.phase.name}"
 
-        # everything offered is accepted by a clone
-        for action in offered:
-            rules.apply(state.clone(), action)
+        offered = set(rules.legal_actions(state))
+        assert len(offered) == len(rules.legal_actions(state)), "duplicate actions offered"
 
-        # a sample of things not offered is rejected
-        candidates = (
-            [build_road(r) for r in range(1, T.NUM_ROADS + 1)]
-            + [build_settlement(v) for v in range(1, T.NUM_VERTICES + 1)]
-            + [build_city(v) for v in range(1, T.NUM_VERTICES + 1)]
-            + [end_turn()]
-        )
-        for action in candidates:
+        for action in ALL_ACTIONS:
             if action in offered:
-                continue
-            with pytest.raises(IllegalAction):
-                rules.apply(state.clone(), action)
+                rules.apply(state.clone(), action)  # must be accepted
+            else:
+                with pytest.raises(IllegalAction):
+                    rules.apply(state.clone(), action)
 
-        rules.apply(state, rng.choice(offered))
+        if state.phase is Phase.ROLL:
+            rules.roll_dice(state)
+        else:
+            rules.apply(state, rng.choice(sorted(offered)))
 
 
 # =========================================================================== #

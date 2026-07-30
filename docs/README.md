@@ -33,6 +33,7 @@ the reasoning at the time is the point.
 | [0009](decisions/0009-immutable-board-mutable-state.md) | The board is immutable; mutable state lives in `GameState` | accepted |
 | [0010](decisions/0010-harbour-placement.md) | Harbours are randomised per board, but evenly spaced | accepted |
 | [0011](decisions/0011-no-player-to-player-trading.md) | No player-to-player trading in this version | accepted — deferred |
+| [0012](decisions/0012-development-card-modelling.md) | How development cards are modelled | accepted |
 
 ## Worth knowing
 
@@ -68,6 +69,16 @@ Consequences that are easy to trip over:
   usually an opponent. Use `state.turn_player` for the turn holder.
 - **No player-to-player trading** ([0011](decisions/0011-no-player-to-player-trading.md)),
   deliberately, for the 1v1 target.
+- **`legal_actions` is not empty during `Phase.ROLL`.** A development card may be played
+  before the dice, so a driver must branch on `phase is Phase.ROLL` rather than on
+  "`legal_actions` came back empty" ([0012](decisions/0012-development-card-modelling.md)).
+- **`state.dev_deck` and opponents' `dev_cards` are hidden information.** The deck is stored
+  in its shuffled order so clones replay identically; a search that reads it knows every
+  future purchase. Phase 3's encoder must mask both, and use `public_victory_points` rather
+  than `victory_points` for what an opponent can see.
+- **Longest Road must be rechecked after *every* build, not just after a road.** A settlement
+  or city can break an opponent's road and take the award off them. `update_awards` does this;
+  it is also the most expensive thing on the hot path.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

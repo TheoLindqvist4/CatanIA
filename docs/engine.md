@@ -35,6 +35,10 @@ arity makes that a lookup rather than a parse:
 | `TRADE_WITH_BANK` | resource given | resource received |
 | `MOVE_ROBBER` | tile id | player to rob, 0 for nobody |
 | `DISCARD` | resource discarded | — |
+| `BUY_DEV_CARD` | — | — |
+| `PLAY_KNIGHT` / `PLAY_ROAD_BUILDING` | — | — |
+| `PLAY_YEAR_OF_PLENTY` | first resource | second resource (ascending) |
+| `PLAY_MONOPOLY` | resource demanded | — |
 
 ---
 
@@ -79,11 +83,15 @@ SETUP_SETTLEMENT ⇄ SETUP_ROAD  (2n placements, snake order)
         │
         ▼
       ROLL ─────── anything but a 7 ──────▶ BUILD ──▶ GAME_OVER
-        │                                    ▲
+        │  ▲                                 ▲
+        │  └──────────┐                      │
         └── a 7 ──▶ DISCARD ──▶ MOVE_ROBBER ─┘
                    (0+ players,
                     1 card each)
 ```
+
+`MOVE_ROBBER` returns to `BUILD` after a 7, but to `ROLL` when a **Knight** sent it there
+before the dice — `state.rolled_this_turn` is what decides.
 
 **Every phase asks for exactly one atomic action.** That is why setup alternates
 settlement/road per placement rather than asking for a pair, and why discarding is one card
@@ -93,9 +101,11 @@ space, and one-card steps do.
 Setup order is a snake: round one in `player_order`, round two reversed. The second
 settlement pays out its adjacent tiles immediately.
 
-`ROLL` is not a decision. `legal_actions` returns `[]` there and the driver calls
-`roll_dice`, because a dice roll is environment stochasticity, not a move. Phase 3's `env`
-will do this automatically.
+`roll_dice` is how you advance out of `ROLL` — a dice roll is environment stochasticity, not
+a move, and Phase 3's `env` will call it automatically. But `legal_actions` is **not** empty
+in `ROLL`: the rules allow playing a development card before the dice, so it returns those
+plays (usually none). A driver must branch on `phase is Phase.ROLL` rather than on
+"`legal_actions` came back empty".
 
 `DISCARD` is the one phase where **`current_player` is not the player whose turn it is** —
 it is whoever owes cards, which is usually an opponent. Use `state.turn_player` when you
@@ -147,21 +157,24 @@ offered by one and rejected by the other**. `apply` raises `IllegalAction` for a
 
 ## What is implemented
 
-✅ Setup with the snake order and the second-settlement payout · the distance rule ·
-road connectivity, including *not* building through an opponent's building · resource costs
-actually charged · production, with cities yielding double and the bank's shortage rule ·
-city upgrades returning the settlement to the supply · piece limits · victory points and the
-win at 10 · longest-road measurement · the bank, with cards conserved · 4:1 bank trading ·
-harbours at 3:1 and 2:1 · **the robber, 7-handling, discarding and stealing** ·
-2–4 players · full determinism from a seed.
+**Every rule of base-game Catan except player trading.** Setup with the snake order and the
+second-settlement payout · the distance rule · road connectivity, including *not* building
+through an opponent's building · resource costs charged · production, with cities yielding
+double and the bank's shortage rule · city upgrades returning the settlement to the supply ·
+piece limits · the bank, with cards conserved · 4:1 bank trading and harbours at 3:1 and 2:1 ·
+the robber, 7-handling, discarding and stealing · all five development cards with both timing
+rules · Largest Army · Longest Road · victory points and the win at 10 · 2–4 players · full
+determinism from a seed.
 
-Random 2-player games: **40 of 40** reach 10 points, median 393 turns.
-
-❌ **Not yet** (Phase 2): development cards · Largest Army · the Longest Road *award* (the
-measurement exists; the 2 points do not).
+Random 2-player games: **40 of 40** reach 10 points, median 349 turns. Largest Army is held in
+39 of them and Longest Road in 37, so both are contested rather than decorative. Winners' points
+came from buildings 203, Victory Point cards 92, Largest Army 58, Longest Road 50.
 
 🚫 **Deliberately out of scope**: player-to-player trading
 ([decision 0011](decisions/0011-no-player-to-player-trading.md)).
+
+⬜ **Next** (Phase 3): the flat action space and legality mask, the observation encoder with
+hidden-information masking, and the Gymnasium-style environment.
 
 ### Trading is what made games finishable
 
@@ -244,29 +257,70 @@ carries `extra = 0`.
 
 The tile under the robber **produces nothing for anyone** until it moves again.
 
+## Development cards and the awards
+
+A 25-card deck: 14 Knight, 5 Victory Point, 2 each of Road Building, Year of Plenty and
+Monopoly. Buying costs sheep + wheat + ore and draws the top card.
+
+Two timing rules: **one card per turn**, and **not the turn you bought it**
+(`state.dev_cards_new` tracks this turn's purchases). A card may be played **before rolling**,
+which is how a Knight blocks a tile before it produces.
+
+| card | effect |
+|---|---|
+| Knight | move the robber and steal; counts toward Largest Army |
+| Victory Point | **never played** — worth a point while held, and hidden from opponents |
+| Road Building | two free roads, as credit (`state.free_roads`); unused credit lapses at end of turn |
+| Year of Plenty | two resources from the bank, as a **sorted** pair so one action means one outcome |
+| Monopoly | every opponent hands over all of one resource; the bank is untouched |
+
+**Largest Army** (3+ knights) and **Longest Road** (5+ segments) are each worth 2 points and
+share one implementation: you need the minimum to qualify, sole leadership to take it from
+someone, and the holder keeps it on a tie. If the holder falls behind into a tie, nobody holds
+it until someone is clearly ahead.
+
+`update_awards` runs after **every build**, not only after a road — a settlement or city can
+*break* an opponent's road and take Longest Road off them.
+
+`victory_points` counts buildings + both awards + Victory Point cards.
+`public_victory_points` is the same minus the hidden VP cards, which is what an opponent can
+see — the encoder needs both.
+
+Why each of these is shaped the way it is:
+[decision 0012](decisions/0012-development-card-modelling.md).
+
 ---
 
 ## Measured
 
 Mid-game, single-threaded:
 
+Mid-game, with a full hand and a card of each type held:
+
 | | |
 |---|---|
-| `legal_actions` | ~166 µs (~6,000/s) — **the bottleneck**; scans 72 roads + 54 vertices twice, plus 20 trade pairs |
+| `legal_actions` | ~218 µs (~4,600/s) — **the bottleneck**; 68 actions offered |
 | `apply` | negligible beside the above |
-| `clone()` snapshot | ~17 µs |
-| `clone(rng=state.rng)` | ~1.3 µs |
+| `update_awards` | ~71 µs — almost all of it `longest_road_length`, once per player |
 | `longest_road_length` | ~76 µs (exponential search, ≤15 roads) |
+| `clone(rng=state.rng)` | ~2.1 µs |
+| `clone()` snapshot | ~17 µs |
 | `trade_rates` | ~2.8 µs |
 | `victory_points` | ~2.2 µs |
 | topology lookup | ~38 ns |
 
-Adding 20 candidate trades per call cost nothing measurable, because `trade_rates` is
-computed once and reused across all 20.
+**Phase 3's two optimisation targets**, in order:
 
-Phase 3 should attack `legal_actions` — tracking a build frontier incrementally instead of
-rescanning, and memoising longest road against a state key. Not worth doing before the
-action space exists to shape it.
+1. **`longest_road_length`.** It is an exponential path search, and `update_awards` runs it
+   per player after *every* build. Memoise it against a road-set key — the answer only
+   changes when roads or blocking buildings change.
+2. **`legal_actions`.** It rescans 72 roads and 54 vertices from scratch each call. Track a
+   build frontier incrementally instead. `can_play_road_building` also scans all 72 roads
+   just to answer "is there anywhere to build".
+
+Neither is worth doing before the action space exists to shape the caching around. Adding 20
+candidate trades cost nothing measurable, because `trade_rates` is computed once and shared
+across all 20 — the same trick applies elsewhere.
 
 ---
 

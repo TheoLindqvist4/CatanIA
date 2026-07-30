@@ -25,6 +25,7 @@ import random
 from enum import IntEnum
 
 from catan.board import Board
+from catan.dev_cards import build_deck, empty_holding
 from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, empty_hand
 from catan.topology import NUM_ROADS, NUM_VERTICES
 
@@ -119,6 +120,28 @@ class GameState:
         #: The bank's supply, indexed by Resource. Cards are conserved: every card is
         #: either here or in a hand, which ``test_cards_are_conserved`` checks.
         self.bank = [BANK_PER_RESOURCE] * NUM_RESOURCES
+
+        #: The development-card deck, drawn from the end. Hidden information — the
+        #: Phase 3 encoder must not expose it.
+        self.dev_deck = build_deck(self.rng)
+        #: Unplayed development cards held, per player, indexed by DevCard.
+        self.dev_cards = [None] + [empty_holding() for _ in range(num_players)]
+        #: Of those, the ones bought this turn, which may not be played yet.
+        self.dev_cards_new = [None] + [empty_holding() for _ in range(num_players)]
+        #: Knights played, per player. Drives Largest Army.
+        self.knights_played = [0] * (num_players + 1)
+        #: One development card per turn.
+        self.dev_card_played_this_turn = False
+        #: Roads still owed by Road Building, which cost nothing.
+        self.free_roads = 0
+
+        #: Whether the dice have been rolled this turn. A Knight may be played before
+        #: rolling, so the robber phase needs to know where to return to.
+        self.rolled_this_turn = False
+
+        #: Award holders, or None. Each is worth 2 victory points.
+        self.largest_army_holder = None
+        self.longest_road_holder = None
 
         self.phase = Phase.SETUP_SETTLEMENT
         self.setup_step = 0
@@ -251,6 +274,16 @@ class GameState:
         other.roads_left = list(self.roads_left)
         other.bank = list(self.bank)
 
+        other.dev_deck = list(self.dev_deck)
+        other.dev_cards = [None] + [list(held) for held in self.dev_cards[1:]]
+        other.dev_cards_new = [None] + [list(held) for held in self.dev_cards_new[1:]]
+        other.knights_played = list(self.knights_played)
+        other.dev_card_played_this_turn = self.dev_card_played_this_turn
+        other.free_roads = self.free_roads
+        other.rolled_this_turn = self.rolled_this_turn
+        other.largest_army_holder = self.largest_army_holder
+        other.longest_road_holder = self.longest_road_holder
+
         other.phase = self.phase
         other.setup_step = self.setup_step
         other.last_settlement = self.last_settlement
@@ -272,6 +305,9 @@ class GameState:
         "hands", "bank", "settlements_left", "cities_left", "roads_left", "phase",
         "setup_step", "last_settlement", "robber_tile", "pending_discards",
         "discards_owed", "turn_number", "last_roll", "winner",
+        "dev_deck", "dev_cards", "dev_cards_new", "knights_played",
+        "dev_card_played_this_turn", "free_roads", "rolled_this_turn",
+        "largest_army_holder", "longest_road_holder",
     )
 
     def __eq__(self, other):
