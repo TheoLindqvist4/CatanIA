@@ -41,6 +41,11 @@ class RuleSet(NamedTuple):
 BASE_GAME = RuleSet(name="base game")
 
 #: Colonist.io ranked 1v1. The format this project targets.
+#:
+#: ⚠️ **Calibrated for two players.** 15 points needs roughly nine buildings, and four
+#: players cannot all find room for that under the distance rule — measured random
+#: 4-player games plateau at 13-14 points and never finish. The engine still runs it (and
+#: truncates cleanly), but for 3-4 players use :data:`BASE_GAME`.
 RANKED_1V1 = RuleSet(
     name="ranked 1v1",
     victory_points_to_win=15,

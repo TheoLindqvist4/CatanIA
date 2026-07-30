@@ -154,6 +154,12 @@ class GameState:
         self.largest_army_holder = None
         self.longest_road_holder = None
 
+        # Memo for longest road, keyed on the ownership arrays themselves rather than
+        # invalidated by hand — see rules.longest_road_lengths. Derived, so it takes no
+        # part in equality.
+        self._longest_road_key = None
+        self._longest_road_lengths = None
+
         self.phase = Phase.SETUP_SETTLEMENT
         self.setup_step = 0
         #: The settlement just placed, which the next setup road must touch.
@@ -306,6 +312,11 @@ class GameState:
         other.turn_number = self.turn_number
         other.last_roll = self.last_roll
         other.winner = self.winner
+
+        # Safe to carry: the key is derived from the arrays that were just copied, so it
+        # matches until one of them changes, and then it simply misses.
+        other._longest_road_key = self._longest_road_key
+        other._longest_road_lengths = self._longest_road_lengths
 
         return other
 

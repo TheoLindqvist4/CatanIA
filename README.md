@@ -15,6 +15,8 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 > - **[ROADMAP.md](ROADMAP.md)** — les phases, ce qui est fait et ce qui reste.
 > - **[docs/engine.md](docs/engine.md)** — comment le moteur s'articule et comment piloter une
 >   partie.
+> - **[docs/ai-surface.md](docs/ai-surface.md)** — comment entraîner une IA dessus : espace
+>   d'actions, encodage des observations, environnement et agents de référence.
 > - **[docs/](docs/README.md)** — l'audit initial, la référence de la géométrie, et les décisions
 >   clés (avec leurs justifications et les écarts assumés par rapport aux règles officielles).
 
@@ -51,9 +53,13 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 - 👥 **2 à 4 joueurs.**
 - 🔁 **Déterminisme** : une partie est entièrement reproductible à partir d'une graine (`seed`).
 
-**Pas encore implémenté :** l'espace d'actions discret, l'encodage des observations (avec masquage
-de l'information cachée) et l'environnement d'entraînement — phase 3. Détails dans
-[ROADMAP.md](ROADMAP.md).
+- 🤖 **Couche IA** : espace d'actions discret de **324** indices avec masque de légalité,
+  observation de **1808** flottants (perspective tournée — « moi » est toujours le joueur 0),
+  masquage de l'information cachée, et un environnement `reset` / `step`. Environ **3 700
+  pas/seconde**. Agents de référence : aléatoire et glouton.
+
+**Pas encore implémenté :** l'échantillonnage de l'information cachée (prérequis pour un MCTS),
+l'interface en ligne de commande et l'API web — phase 4. Détails dans [ROADMAP.md](ROADMAP.md).
 
 **Volontairement hors périmètre :** l'échange entre joueurs. La cible est le 1 contre 1, où céder
 des ressources profite au seul adversaire capable de vous battre — et une offre libre est un
@@ -129,6 +135,13 @@ CatanIA/
 │   │-- 🧭 state.py           #   GameState : tout ce qui change pendant la partie
 │   │-- 🎯 actions.py         #   Action = (type, position, extra)
 │   │-- ⚖️ rules.py           #   legal_actions / apply — l'unique autorité de légalité
+│   │-- 🎲 dice.py            #   dés simples, ou le paquet de 36 « dés équilibrés »
+│   │-- 📜 rulesets.py        #   jeu de base ou 1 contre 1 classé (par défaut)
+│   │-- 🃏 dev_cards.py       #   la pioche de 25 cartes
+│   │-- 🎯 action_space.py    #   324 indices + masque de légalité
+│   │-- 👁️ encoder.py         #   l'observation destinée au réseau
+│   │-- 🕹️ env.py             #   environnement reset / step
+│   │-- 🤖 agents.py          #   agents de référence et arène de matchs
 │-- 🧪 tests/                 # Suite de tests (pytest)
 │-- 📚 docs/                  # Audit, géométrie, moteur, décisions clés
 │-- 🛣️ ROADMAP.md             # État du projet et phases

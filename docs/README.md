@@ -13,6 +13,7 @@ been established: how things work, and why they were decided that way.
 |---|---|
 | [board-geometry.md](board-geometry.md) | How the 19 tiles, 54 settlement positions and 72 road positions are numbered, the coordinate lattice, and the coastline. **Start here** to understand the board. |
 | [engine.md](engine.md) | How the engine fits together: the layers, the state model, and how to drive a game. **Start here** to use the code. |
+| [ai-surface.md](ai-surface.md) | How to train against it: the action space, the observation, the environment, and the baselines. |
 | [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 
 ## Decisions
@@ -35,6 +36,7 @@ the reasoning at the time is the point.
 | [0011](decisions/0011-no-player-to-player-trading.md) | No player-to-player trading in this version | accepted — deferred |
 | [0012](decisions/0012-development-card-modelling.md) | How development cards are modelled | accepted |
 | [0013](decisions/0013-ranked-1v1-ruleset.md) | Ranked 1v1 is the target ruleset | accepted |
+| [0014](decisions/0014-ai-surface.md) | The AI surface: action space, observations, environment | accepted |
 
 ## Worth knowing
 
@@ -93,6 +95,16 @@ Consequences that are easy to trip over:
 - **Longest Road must be rechecked after *every* build, not just after a road.** A settlement
   or city can break an opponent's road and take the award off them. `update_awards` does this;
   it is also the most expensive thing on the hot path.
+- **`info["player"]` is who must act, not the turn holder.** During a discard it is usually
+  an opponent. Assuming alternation is the classic multi-agent environment bug
+  ([0014](decisions/0014-ai-surface.md)).
+- **Search must reshuffle hidden state before it samples anything.** `clone(rng=state.rng)`
+  copies `dice_deck`, `dev_deck` and opponents' `dev_cards` verbatim, so a rollout replays the
+  same future rather than sampling one. Correct — these are hidden, not random — but it means
+  belief-sampling is a prerequisite for MCTS, and it is deliberately not implemented
+  ([ai-surface.md](ai-surface.md#-search-needs-to-sample-hidden-state-and-does-not-yet)).
+- **The action-space size does not depend on the player count**, so weights transfer between
+  1v1 and 4-player. Robber actions naming an absent player are simply never legal.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

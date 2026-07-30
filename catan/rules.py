@@ -131,6 +131,15 @@ def can_build_road(state, player, road):
         return False
     if state.free_roads <= 0 and not resources.can_afford(state.hands[player], ROAD_COST):
         return False
+    return is_road_connected(state, player, road)
+
+
+def is_road_connected(state, player, road):
+    """Whether ``road`` touches ``player``'s network, ignoring cost and pieces.
+
+    The reachability half of :func:`can_build_road`, so callers that only want "could this
+    ever be mine" — the observation encoder, for one — do not have to know about payment.
+    """
     return any(
         _connects_at(state, player, endpoint) for endpoint in ROAD_VERTICES[road]
     )
@@ -338,7 +347,7 @@ def update_awards(state):
     )
     state.longest_road_holder = _update_award(
         state.longest_road_holder,
-        {p: longest_road_length(state, p) for p in state.players},
+        longest_road_lengths(state),
         LONGEST_ROAD_MINIMUM,
     )
 
@@ -495,21 +504,34 @@ def legal_actions(state):
 
     if state.phase is Phase.BUILD:
         actions = [end_turn()]
-        actions += [
-            build_road(r)
-            for r in range(1, NUM_ROADS + 1)
-            if can_build_road(state, player, r)
-        ]
-        actions += [
-            build_settlement(v)
-            for v in range(1, NUM_VERTICES + 1)
-            if can_build_settlement(state, player, v)
-        ]
-        actions += [
-            build_city(v)
-            for v in range(1, NUM_VERTICES + 1)
-            if can_build_city(state, player, v)
-        ]
+        hand = state.hands[player]
+
+        # The cheap gates first. Scanning 72 roads or 54 vertices to discover the player
+        # cannot afford any of them is the common case and pure waste — an empty hand is
+        # far more frequent than a full one. The per-action predicates below are still the
+        # authority; this only skips loops that provably cannot yield anything.
+        if state.roads_left[player] > 0 and (
+            state.free_roads > 0 or resources.can_afford(hand, ROAD_COST)
+        ):
+            actions += [
+                build_road(r)
+                for r in range(1, NUM_ROADS + 1)
+                if can_build_road(state, player, r)
+            ]
+        if state.settlements_left[player] > 0 and resources.can_afford(
+            hand, SETTLEMENT_COST
+        ):
+            actions += [
+                build_settlement(v)
+                for v in range(1, NUM_VERTICES + 1)
+                if can_build_settlement(state, player, v)
+            ]
+        if state.cities_left[player] > 0 and resources.can_afford(hand, CITY_COST):
+            actions += [
+                build_city(v)
+                for v in range(1, NUM_VERTICES + 1)
+                if can_build_city(state, player, v)
+            ]
         rates = trade_rates(state, player)  # computed once for all 20 candidates
         actions += [
             trade_with_bank(give, take)
@@ -979,7 +1001,35 @@ def _check_for_winner(state, player):
 # LONGEST ROAD                                                                #
 # --------------------------------------------------------------------------- #
 
+def longest_road_lengths(state):
+    """``{player: longest road}`` for everyone, memoised.
+
+    The search is exponential, and both :func:`update_awards` and the observation encoder
+    want it for every player — so it is computed once per distinct board position and
+    shared.
+
+    The memo is keyed on **the ownership arrays themselves**, not invalidated by hand.
+    Hand invalidation would be a rule every future mutation site had to remember, including
+    test helpers that write straight into the arrays; a derived key simply misses instead.
+    Building and hashing the key costs a few microseconds against tens per search.
+    """
+    key = (tuple(state.edge_owner), tuple(state.vertex_owner))
+    if state._longest_road_key == key:
+        return state._longest_road_lengths
+
+    lengths = {player: _longest_road_length(state, player) for player in state.players}
+    state._longest_road_key = key
+    state._longest_road_lengths = lengths
+    return lengths
+
+
 def longest_road_length(state, player):
+    """Longest continuous chain of ``player``'s roads. Memoised via
+    :func:`longest_road_lengths`."""
+    return longest_road_lengths(state)[player]
+
+
+def _longest_road_length(state, player):
     """Longest continuous chain of ``player``'s roads.
 
     Two rules, both settled in ``docs/decisions/0006``:

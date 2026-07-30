@@ -19,10 +19,10 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
 | **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
-| **3** | AI surface (action space, observations, env) | 🔶 **in progress** — action space done |
-| **4** | Interfaces (CLI, web API) | ⬜ not started |
+| **3** | AI surface (action space, observations, env) | ✅ **done** |
+| **4** | Interfaces (CLI, web API) | ⬜ next |
 
-484 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+573 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -45,9 +45,9 @@ catan/
   actions.py       # ✅ Action = (type, position, extra)
   rules.py         # ✅ legal_actions / apply — the single legality authority
   action_space.py  # ✅ 324 flat indices + legal_mask(state)
-  encoder.py       #    Phase 3: to_vector(state, perspective_player), hidden-info masked
-  env.py           #    Phase 3: Gymnasium-style reset(seed) / step(action)
-  agents/          #    Phase 3: random, heuristic, then the network
+  encoder.py       # ✅ 1808-float observation, perspective-rotated, hidden-info masked
+  env.py           # ✅ Gymnasium-style reset(seed) / step(index)
+  agents.py        # ✅ random and greedy baselines + play_match
 interfaces/
   cli.py           #    Phase 4: the ONLY place print()/input() may appear
   api.py           #    Phase 4: adapter for the FullStackCatan front end
@@ -239,7 +239,7 @@ trading hands resources to the only opponent who can beat you, and an unrestrict
 multiset-for-multiset exchange that does not flatten into a discrete action space. Revisit when
 adding 3–4 player training or human play.
 
-## Phase 3 — AI surface ⬜
+## Phase 3 — AI surface ✅
 
 - [x] **`action_space.py`**: **324** flat indices, in contiguous blocks by action type, plus
       `legal_mask(state) -> bytearray`. The size is independent of the player count, so a network
@@ -248,13 +248,35 @@ adding 3–4 player training or human play.
       the engine was rebuilt to remove. Costs +2% over `legal_actions`.
       The load-bearing test asserts every action the rules can ever offer is expressible: if one
       were not, the mask would drop it silently and an agent could never choose it.
-- [ ] `encoder.py`: fixed-length observation, perspective-rotated, hidden-info masked.
-- [ ] `env.py`: `reset(seed)` / `step(action) -> (obs, reward, done, info)`, auto-rolling in the
-      `ROLL` phase; `clone(rng=state.rng)` for MCTS.
-- [ ] **Performance.** `legal_actions` is the bottleneck at ~174 µs (~5,700/s) because it rescans
-      72 roads and 54 vertices twice. Track a build frontier incrementally, and memoise longest
-      road against a state key. Worth doing once the action space exists to shape it, not before.
-- [ ] Random + heuristic baseline agents.
+- [x] **`encoder.py`**: a **1808**-float observation with named blocks (`LAYOUT`, `SHAPES`) so a
+      graph or convolutional model can reshape rather than being forced through an MLP.
+      Perspective-rotated — *me* is always player slot 0, so one network plays every seat.
+      Hidden information masked per observer, enforced by **leak detectors** that mutate the
+      hidden thing and assert the observation does not move.
+- [x] **`env.py`**: `reset(seed)` / `step(index)`. Rolls the dice for you (it is stochasticity,
+      not a move) *except* when a development card can be played first, which is a real choice.
+      `info["player"]` is **who must act** — during a discard that is usually an opponent.
+      Terminal zero-sum reward, and truncation reported separately from termination.
+- [x] **`agents.py`**: random and greedy baselines, plus `play_match`, which **swaps seats every
+      other game** because Catan's first-player advantage is real. Greedy beats random ~70%.
+- [x] **Performance.** Memoising longest road was the big win — it is an exponential search and
+      both `update_awards` (after every build) and the encoder wanted it per player. The memo is
+      keyed on the ownership arrays themselves rather than invalidated by hand, so a future
+      mutation site cannot forget. `legal_actions` also gained affordability gates.
+
+      | | before | after |
+      |---|---|---|
+      | `update_awards` | 83 µs | **1 µs** |
+      | `encoder.encode` | 458 µs | **250 µs** |
+      | `legal_mask`, poor hand | 245 µs | **16 µs** |
+      | per env step, typical | ~700 µs | **~270 µs** (~3,700/s) |
+
+      → [docs/ai-surface.md](docs/ai-surface.md),
+      [decision 0014](docs/decisions/0014-ai-surface.md)
+- [ ] **Belief sampling — a prerequisite for MCTS.** `clone(rng=state.rng)` copies `dice_deck`,
+      `dev_deck` and opponents' `dev_cards` verbatim, so a rollout replays the same future rather
+      than sampling one. Correct (these are hidden, not random) but it means search must reshuffle
+      the unseen parts. Left out deliberately: the right approach depends on the algorithm.
 - [ ] Scale `tests/test_selfplay.py` up to the 10k-game harness. The invariant checks are written;
       it is currently 60 games at 1,500 actions.
 
