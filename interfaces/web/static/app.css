@@ -100,3 +100,85 @@ svg { width: 100%; height: auto; display: block; }
 #log { margin: 0; padding-left: 18px; }
 #log li { color: #9aa3b2; font-size: 12.5px; }
 #log li.mine { color: #e8e8ea; }
+
+/* ------------------------------------------------------------------ cards */
+/* Resources are shown as the pictures from the board rather than as words, so a hand can
+   be read at a glance. The tile art doubles as the card art: a wood card is the forest. */
+
+.hand {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  overflow: hidden;
+  background: #10202f;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.chip .res-icon {
+  display: block;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+/* The count sits on the card, like pips on a playing card. */
+.chip b {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  padding: 0 3px;
+  font-size: 11px;
+  line-height: 14px;
+  color: #fff;
+  background: rgba(12, 20, 30, 0.82);
+  border-radius: 4px 0 4px 0;
+}
+
+/* A resource you hold none of stays visible but recedes, so the row does not reflow every
+   time a card is spent. */
+.chip-empty {
+  opacity: 0.28;
+  filter: grayscale(0.7);
+}
+
+/* An opponent's hand is hidden information: the count is public, the composition is not,
+   so it is drawn as that many card backs. */
+.hidden-hand .card-back {
+  width: 13px;
+  height: 22px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(45deg, #7b3f26, #7b3f26 3px, #6a3520 3px, #6a3520 6px);
+  border: 1px solid #4a2415;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.hidden-hand .count {
+  align-self: center;
+  margin-left: 4px;
+  font-size: 12px;
+  color: #9fb4c8;
+}
+
+/* Inline pictures inside a button label, e.g. "trade 4 wheat for 1 ore". */
+button .res-icon {
+  vertical-align: -3px;
+  margin-right: 2px;
+  border-radius: 3px;
+}
+
+/* Painted pieces sit better with a little separation from the board underneath. */
+.piece {
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.55));
+}
+
+#supply .hand {
+  margin-top: 0;
+}

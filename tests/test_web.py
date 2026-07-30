@@ -5,6 +5,7 @@ in the JSON is in the browser, and someone will read it.
 """
 
 import json
+import pathlib
 import random
 import threading
 import urllib.error
@@ -432,3 +433,88 @@ def test_safe_path_rejects_escapes(tmp_path):
     assert safe_path(tmp_path, "inside.txt") is not None
     assert safe_path(tmp_path, "../outside.txt") is None
     assert safe_path(tmp_path, "missing.txt") is None
+
+
+# =========================================================================== #
+# ARTWORK                                                                     #
+# =========================================================================== #
+
+def test_the_client_is_told_which_picture_goes_with_which_name():
+    """The art set predates the code: wheat is drawn by ``weat.png`` and ore by
+    ``stone.png``. The client must not have to know that — a second copy of the mapping in
+    JavaScript is exactly the kind of divergence this interface exists to avoid."""
+    art = api.geometry()["art"]
+    assert art["resources"]["wheat"] == "weat"
+    assert art["resources"]["ore"] == "stone"
+    assert set(art["resources"]) == set(api.RESOURCE_NAMES)
+
+
+def test_piece_colours_match_the_png_renderer():
+    """One asset set, drawn the same way on screen and in a saved image."""
+    from interfaces.render import PLAYER_COLOURS
+
+    colours = api.geometry()["art"]["colours"]
+    for slot, colour in enumerate(PLAYER_COLOURS):
+        assert colours[slot + 1] == colour
+
+
+def test_sprite_scales_come_from_the_renderer():
+    from interfaces import render
+
+    scales = api.geometry()["art"]["scales"]
+    assert scales["settlement"] == render.SETTLEMENT_SCALE
+    assert scales["city"] == render.CITY_SCALE
+    assert scales["roadLength"] == render.ROAD_LENGTH_SCALE
+    assert scales["spot"] == render.SPOT_SCALE
+    assert scales["robber"] == render.ROBBER_SCALE
+
+
+def test_every_asset_the_client_can_ask_for_exists():
+    """The client builds image URLs from the served mapping, so every combination it can
+    produce has to be a real file. A missing one is an invisible piece, not an error."""
+    art = api.geometry()["art"]
+    images = pathlib.Path(__file__).resolve().parents[1] / "interfaces" / "static" / "images"
+
+    missing = []
+    for name in art["resources"].values():
+        if not (images / "tiles" / f"{name}.png").is_file():
+            missing.append(f"tiles/{name}.png")
+    for colour in art["colours"].values():
+        for folder, pattern in (("roads", "{}_road.png"),
+                                ("settlements", "{}.png"),
+                                ("cities", "{}_city.png")):
+            if not (images / folder / pattern.format(colour)).is_file():
+                missing.append(f"{folder}/{pattern.format(colour)}")
+    if not (images / "spots" / "circle.png").is_file():
+        missing.append("spots/circle.png")
+    for number in list(range(2, 7)) + list(range(8, 13)):
+        if not (images / "numbers" / f"{number}.png").is_file():
+            missing.append(f"numbers/{number}.png")
+
+    assert not missing, missing
+
+
+def test_the_client_does_not_hard_code_the_art_mapping():
+    """If the JavaScript ever writes "weat" or a colour name in *code*, the mapping has
+    been duplicated and the two copies will drift. Comments may name them freely — that is
+    where the explanation belongs, and stripping them is what makes this test about the
+    behaviour rather than about the prose."""
+    client = (pathlib.Path(__file__).resolve().parents[1]
+              / "interfaces" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    code = [
+        line for line in client.splitlines()
+        if not line.strip().startswith(("//", "/*", "*"))
+    ]
+    code = "\n".join(code)
+    for literal in ('"weat"', "'weat'", "weat.png", "stone.png",
+                    '"red_road', '"blue_road', "settlements/red", "cities/blue"):
+        assert literal not in code, f"{literal} is hard-coded in app.js"
+
+
+def test_the_client_has_no_stray_control_characters():
+    """A ``\b`` written inside a template literal is a backspace, not a word boundary. It
+    produces a pattern that matches nothing while reading as though it should work."""
+    client = (pathlib.Path(__file__).resolve().parents[1]
+              / "interfaces" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    for bad in ("\b", "\f", "\v", "\x00"):
+        assert bad not in client, f"control character {bad!r} in app.js"

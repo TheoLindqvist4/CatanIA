@@ -10,6 +10,10 @@
  */
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+
+/* Tints, used only for accents — the pieces themselves are the painted assets, whose colour
+ * names arrive from the server in `geometry.art.colours` so the board and the PNG renderer
+ * cannot drift apart. */
 const PLAYER_COLOURS = { 1: "#d64545", 2: "#3b6fd4", 3: "#e08b2a", 4: "#4aa564" };
 
 const state = {
@@ -19,6 +23,27 @@ const state = {
   mode: null,        // which board action type is armed
   busy: false,
 };
+
+/** Asset file name for a player's pieces, e.g. 1 -> "red". */
+const colourOf = (player) => (state.geometry.art.colours[player] || "black");
+
+/** Sprite sizes, taken from the PNG renderer so both draw the board the same. */
+const scale = (name) => state.geometry.art.scales[name];
+
+/** Asset file name for a resource. The art set calls wheat "weat" and ore "stone". */
+const resourceImage = (name) => state.geometry.art.resources[name] || name;
+
+/** A small picture of a resource, as an <img> for the side panels. */
+function resourceIcon(name, size) {
+  return `<img class="res-icon" src="/images/tiles/${resourceImage(name)}.png"` +
+         ` alt="${name}" title="${name}" width="${size}" height="${size}">`;
+}
+
+/** A resource count as a picture with a number on it, rather than "wood 3". */
+function resourceChip(name, count, muted) {
+  return `<span class="chip${muted ? " chip-empty" : ""}" title="${name}: ${count}">` +
+         `${resourceIcon(name, 22)}<b>${count}</b></span>`;
+}
 
 /* ---------------------------------------------------------------- server */
 
@@ -133,7 +158,7 @@ function drawBoard() {
   for (const spot of geometry.tiles) {
     const tile = tileById[spot.id];
     if (tile.number === null) continue;
-    const size = geometry.hexWidth * 0.4;
+    const size = geometry.hexWidth * scale("number");
     el("image", {
       href: `/images/numbers/${tile.number}.png`,
       x: spot.x - size / 2,
@@ -148,9 +173,9 @@ function drawBoard() {
   // robber
   const robber = geometry.tiles.find((t) => t.id === view.robber);
   if (robber) {
+    const r = geometry.hexWidth * scale("robber") / 2;
     el("ellipse", {
-      cx: robber.x, cy: robber.y,
-      rx: geometry.hexWidth * 0.13, ry: geometry.hexWidth * 0.18,
+      cx: robber.x, cy: robber.y, rx: r * 0.85, ry: r * 1.2,
       fill: "#26262b", stroke: "#0e0e12", "stroke-width": 2,
     }, svg);
   }
@@ -198,10 +223,15 @@ function drawRoads(svg, roadOn) {
     const index = targets[road.id];
 
     if (owner) {
-      el("line", {
-        x1: road.x1, y1: road.y1, x2: road.x2, y2: road.y2,
-        stroke: PLAYER_COLOURS[owner] || "#fff",
-        "stroke-width": geometry.hexWidth * 0.09, "stroke-linecap": "round",
+      // The road assets are painted vertically and the geometry gives the angle from
+      // vertical, which is the same convention interfaces/render.py uses for the PNG.
+      const length = geometry.edge * scale("roadLength");
+      const width = length * (56 / 225);          // the sprites are 56x225
+      el("image", {
+        href: `/images/roads/${colourOf(owner)}_road.png`,
+        x: road.cx - width / 2, y: road.cy - length / 2,
+        width, height: length,
+        transform: `rotate(${road.angle} ${road.cx} ${road.cy})`,
       }, svg);
     } else if (armed && index !== undefined) {
       el("line", {
@@ -232,16 +262,18 @@ function drawVertices(svg, buildingAt) {
   for (const spot of geometry.vertices) {
     const building = buildingAt[spot.id];
     if (building) {
-      const size = geometry.hexWidth * (building.kind === "city" ? 0.19 : 0.13);
-      el(building.kind === "city" ? "rect" : "circle",
-        building.kind === "city"
-          ? { x: spot.x - size, y: spot.y - size, width: size * 2, height: size * 2,
-              rx: size * 0.3, fill: PLAYER_COLOURS[building.player],
-              stroke: "#1c1c22", "stroke-width": 2 }
-          : { cx: spot.x, cy: spot.y, r: size,
-              fill: PLAYER_COLOURS[building.player],
-              stroke: "#1c1c22", "stroke-width": 2 },
-        svg);
+      const city = building.kind === "city";
+      const colour = colourOf(building.player);
+      // sprites are 226x201 (cities) and 160x133 (settlements)
+      const width = geometry.hexWidth * scale(city ? "city" : "settlement");
+      const height = width * (city ? 201 / 226 : 133 / 160);
+      el("image", {
+        href: city ? `/images/cities/${colour}_city.png`
+                   : `/images/settlements/${colour}.png`,
+        x: spot.x - width / 2, y: spot.y - height / 2,
+        width, height,
+        class: "piece",
+      }, svg);
     }
 
     const index =
@@ -250,9 +282,11 @@ function drawVertices(svg, buildingAt) {
       : undefined;
     if (index === undefined) continue;
 
-    el("circle", {
-      cx: spot.x, cy: spot.y, r: geometry.hexWidth * 0.11,
-      fill: "rgba(255,230,128,0.55)", stroke: "#fff2ad", "stroke-width": 2,
+    const marker = geometry.hexWidth * scale("spot");
+    el("image", {
+      href: "/images/spots/circle.png",
+      x: spot.x - marker / 2, y: spot.y - marker / 2,
+      width: marker, height: marker,
       class: "target",
     }, svg);
     const hit = el("circle", {
@@ -306,13 +340,19 @@ function drawStatus() {
       ? `${player.publicVictoryPoints} public vp`
       : `${player.victoryPoints} vp`;
 
+    // Your own hand is shown card by card; an opponent's is hidden information, so all
+    // that can be drawn is the right number of card backs.
     let cards;
     if (player.hand) {
-      const parts = Object.entries(player.hand).filter(([, n]) => n > 0)
-        .map(([name, n]) => `${name} ${n}`);
-      cards = parts.length ? parts.join(", ") : "no cards";
+      const chips = Object.entries(player.hand)
+        .map(([name, n]) => resourceChip(name, n, n === 0))
+        .join("");
+      cards = `<div class="hand">${chips}</div>`;
     } else {
-      cards = `${player.handCount} cards`;
+      const backs = Array.from({ length: Math.min(player.handCount, 14) },
+        () => '<span class="card-back"></span>').join("");
+      cards = `<div class="hand hidden-hand">${backs}` +
+              `<span class="count">${player.handCount}</span></div>`;
     }
 
     card.innerHTML = `
@@ -320,7 +360,7 @@ function drawStatus() {
         <strong>${player.you ? "You" : "Opponent"}</strong>
         <span>${points}</span>
       </div>
-      <div class="muted">${cards}</div>
+      ${cards}
       <div class="muted">${player.devCount} dev · ${player.knights} knights ·
         road ${player.longestRoad}</div>
       <div class="muted">left: ${player.settlementsLeft}s ${player.citiesLeft}c
@@ -365,16 +405,29 @@ function drawPanel() {
   }
   for (const action of actions) {
     const button = document.createElement("button");
-    button.textContent = action.label;
+    // Illustrate whichever resources the label names, so a row of trades can be read at a
+    // glance instead of parsed. Word by word rather than by regular expression: a `\b` in
+    // a template literal is a backspace character, not a word boundary, and the resulting
+    // pattern matches nothing while looking entirely correct.
+    button.innerHTML = action.label
+      .split(" ")
+      .map((word) => {
+        const name = word.toLowerCase();
+        return state.geometry.art.resources[name]
+          ? `${resourceIcon(name, 16)}${word}`
+          : word;
+      })
+      .join(" ");
     if (action.type === "END_TURN") button.className = "primary";
     button.addEventListener("click", () => play(action.index));
     holder.appendChild(button);
   }
 
   const view = state.view;
-  document.getElementById("supply").textContent =
-    Object.entries(view.bank).map(([name, n]) => `${name} ${n}`).join(" · ")
-    + ` · dev deck ${view.devDeck}`;
+  document.getElementById("supply").innerHTML =
+    `<div class="hand">` +
+    Object.entries(view.bank).map(([name, n]) => resourceChip(name, n, n === 0)).join("") +
+    `</div><div class="muted">dev deck ${view.devDeck}</div>`;
 }
 
 function drawLog() {

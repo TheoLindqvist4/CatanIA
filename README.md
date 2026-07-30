@@ -124,8 +124,11 @@ save(env.state, "board.png")
    python -m interfaces.web
    ```
    Puis ouvrir <http://127.0.0.1:8000>. On clique directement sur le plateau pour poser une
-   colonie, une route ou une ville ; les emplacements légaux clignotent. Le dé, les mains, les
-   cartes, la banque, le voleur et le journal de la partie sont affichés en permanence.
+   colonie, une route ou une ville ; les emplacements légaux clignotent. Les pièces sont les
+   illustrations peintes du jeu — colonies, villes et routes — et les ressources sont
+   montrées en cartes plutôt qu'en mots, y compris dans la banque et sur les boutons
+   d'échange. La main de l'adversaire est cachée : on n'en voit que le dos des cartes.
+   Le dé, les mains, la banque, le voleur et le journal sont affichés en permanence.
    L'adversaire se choisit dans le menu déroulant — `hard` par défaut. Aucune dépendance :
    uniquement la bibliothèque standard.
 

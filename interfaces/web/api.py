@@ -28,7 +28,8 @@ from catan.resources import NUM_RESOURCES, Resource
 from catan.rulesets import BASE_GAME, RANKED_1V1
 from catan.state import NO_OWNER, Phase, Piece
 from catan.topology import NUM_ROADS, NUM_TILES, NUM_VERTICES, ROAD_VERTICES
-from interfaces.render import Geometry
+from interfaces import render
+from interfaces.render import PLAYER_COLOURS as RENDER_COLOURS, Geometry
 
 #: The human always sits in seat 1, so the client never has to ask which side it is on.
 HUMAN = 1
@@ -89,6 +90,13 @@ TILE_IMAGES = {
     Resource.WHEAT: "weat", Resource.ORE: "stone", None: "desert",
 }
 RESOURCE_NAMES = [resource.name.lower() for resource in Resource]
+
+#: Resource name -> the file that pictures it. The art set predates the code and calls wheat
+#: "weat" and ore "stone"; the client should not have to know that, so the mapping is served
+#: rather than hard-coded in JavaScript where it would be a second source of truth.
+RESOURCE_IMAGES = {
+    resource.name.lower(): TILE_IMAGES[resource] for resource in Resource
+}
 DEV_CARD_NAMES = [card.name.lower() for card in DevCard]
 
 #: Action types chosen from a panel rather than by clicking the board.
@@ -189,6 +197,25 @@ def geometry(hex_width=110):
     """
     plan = Geometry(hex_width=hex_width)
     return {
+        # Which picture goes with which name. Shared with interfaces/render.py's PNG
+        # renderer, so the board on screen and the board in a saved image use one asset set.
+        "art": {
+            "resources": RESOURCE_IMAGES,
+            "colours": {
+                slot + 1: colour for slot, colour in enumerate(RENDER_COLOURS)
+            },
+            # The sizes the PNG renderer uses, served rather than restated in JavaScript.
+            # Two renderers drawing the same assets at different sizes is the kind of quiet
+            # divergence this project keeps removing.
+            "scales": {
+                "settlement": render.SETTLEMENT_SCALE,
+                "city": render.CITY_SCALE,
+                "number": render.NUMBER_SCALE,
+                "spot": render.SPOT_SCALE,
+                "roadLength": render.ROAD_LENGTH_SCALE,
+                "robber": render.ROBBER_SCALE,
+            },
+        },
         "width": plan.width,
         "height": plan.height,
         "hexWidth": plan.hex_width,
