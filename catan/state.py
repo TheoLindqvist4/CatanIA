@@ -41,15 +41,24 @@ class Piece(IntEnum):
 class Phase(IntEnum):
     """Which decision the game is waiting for.
 
-    The two setup phases alternate per placement, so every setup step is one atomic
-    action — which is what an RL agent needs.
+    Every phase asks for exactly one atomic action, which is what an RL agent needs. That
+    is why setup alternates settlement/road per placement, and why discarding is one card
+    per action rather than a chosen multiset.
     """
 
     SETUP_SETTLEMENT = 0
     SETUP_ROAD = 1
     ROLL = 2
     BUILD = 3
-    GAME_OVER = 4
+    #: A 7 was rolled: someone is over the hand limit and must discard.
+    DISCARD = 4
+    #: A 7 was rolled and discards are done: the roller places the robber.
+    MOVE_ROBBER = 5
+    GAME_OVER = 6
+
+
+#: Holding more than this when a 7 is rolled means discarding down to half.
+HAND_LIMIT = 7
 
 
 #: Victory points a piece is worth.
@@ -116,6 +125,15 @@ class GameState:
         #: The settlement just placed, which the next setup road must touch.
         self.last_settlement = None
 
+        #: Where the robber is. It starts on the desert, which is part of the layout;
+        #: it moves during play, so it lives here and not on the board.
+        self.robber_tile = self.board.desert_tile
+        #: Players still owing discards after a 7, in the order they must discard.
+        self.pending_discards = []
+        #: Cards each player still has to discard. Fixed when the 7 is rolled — half of
+        #: the hand *at that moment*, so it cannot drift as the hand shrinks.
+        self.discards_owed = [0] * (num_players + 1)
+
         self.turn_number = 0
         self.last_roll = None
         self.winner = None
@@ -146,11 +164,24 @@ class GameState:
 
     @property
     def current_player(self):
-        """Whose decision the game is waiting on."""
+        """Whose decision the game is waiting on.
+
+        Usually the player whose turn it is — but during :attr:`Phase.DISCARD` it is
+        whoever owes a discard, which may be an opponent.
+        """
         if self.in_setup:
             return self.setup_sequence[self.setup_step]
+        if self.phase is Phase.DISCARD:
+            return self.pending_discards[0]
         if self.phase is Phase.GAME_OVER:
             return self.winner
+        return self.player_order[self.turn_number % self.num_players]
+
+    @property
+    def turn_player(self):
+        """Whose turn it is, regardless of who is being asked to act."""
+        if self.in_setup:
+            return self.setup_sequence[self.setup_step]
         return self.player_order[self.turn_number % self.num_players]
 
     def randomize_order(self):
@@ -223,6 +254,9 @@ class GameState:
         other.phase = self.phase
         other.setup_step = self.setup_step
         other.last_settlement = self.last_settlement
+        other.robber_tile = self.robber_tile
+        other.pending_discards = list(self.pending_discards)
+        other.discards_owed = list(self.discards_owed)
         other.turn_number = self.turn_number
         other.last_roll = self.last_roll
         other.winner = self.winner
@@ -236,7 +270,8 @@ class GameState:
     _COMPARED = (
         "num_players", "player_order", "vertex_owner", "vertex_piece", "edge_owner",
         "hands", "bank", "settlements_left", "cities_left", "roads_left", "phase",
-        "setup_step", "last_settlement", "turn_number", "last_roll", "winner",
+        "setup_step", "last_settlement", "robber_tile", "pending_discards",
+        "discards_owed", "turn_number", "last_roll", "winner",
     )
 
     def __eq__(self, other):

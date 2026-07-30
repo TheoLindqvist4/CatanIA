@@ -11,7 +11,13 @@ type                         position                    extra
 ``BUILD_SETTLEMENT``         vertex id                   unused
 ``BUILD_CITY``               vertex id                   unused
 ``TRADE_WITH_BANK``          resource given              resource received
+``MOVE_ROBBER``              tile id                     player to rob, 0 for nobody
+``DISCARD``                  resource discarded          unused
 ===========================  ==========================  ====================
+
+``DISCARD`` gives up **one** card at a time. Choosing a whole multiset to discard does not
+flatten into a discrete action space; one card per action does, at the cost of several
+steps. The phase simply stays until the player is down to their limit.
 
 Two plain ints rather than a variable payload, because Phase 3 has to flatten every
 action into one discrete index and a fixed arity makes that a lookup rather than a parse.
@@ -36,6 +42,8 @@ class ActionType(IntEnum):
     BUILD_SETTLEMENT = 2
     BUILD_CITY = 3
     TRADE_WITH_BANK = 4
+    MOVE_ROBBER = 5
+    DISCARD = 6
 
 
 #: Action types that carry a road id in ``position``.
@@ -66,6 +74,11 @@ class Action(NamedTuple):
         if self.type == ActionType.TRADE_WITH_BANK:
             return (f"TRADE({_enum_name(Resource, self.position)}"
                     f"->{_enum_name(Resource, self.extra)})")
+        if self.type == ActionType.DISCARD:
+            return f"DISCARD({_enum_name(Resource, self.position)})"
+        if self.type == ActionType.MOVE_ROBBER:
+            victim = f", rob {self.extra}" if self.extra else ""
+            return f"MOVE_ROBBER(tile {self.position}{victim})"
         return f"{kind}({self.position})"
 
 
@@ -97,3 +110,13 @@ def build_city(vertex):
 def trade_with_bank(give, take):
     """Give the bank ``give`` at the player's best rate, receive one ``take``."""
     return Action(ActionType.TRADE_WITH_BANK, int(give), int(take))
+
+
+def move_robber(tile, victim=0):
+    """Put the robber on ``tile`` and steal one card from ``victim`` (0 for nobody)."""
+    return Action(ActionType.MOVE_ROBBER, tile, victim)
+
+
+def discard(resource):
+    """Give up one card of ``resource``."""
+    return Action(ActionType.DISCARD, int(resource))

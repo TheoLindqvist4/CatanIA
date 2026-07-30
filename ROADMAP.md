@@ -18,11 +18,11 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 |---|---|---|
 | **0** | Unblock: correctness, performance, determinism, tests | ✅ **done** |
 | **1** | Real state model + economy | ✅ **done** |
-| **2** | Complete the rules | 🔶 **in progress** — bank + trading done |
+| **2** | Complete the rules | 🔶 **in progress** — bank, trading, robber done |
 | **3** | AI surface (action space, observations, env) | ⬜ not started |
 | **4** | Interfaces (CLI, web API) | ⬜ not started |
 
-320 tests. `python -m pytest -m "not slow"` runs the fast ones in ~2s.
+363 tests. `python -m pytest -m "not slow"` runs the fast ones in ~3s.
 
 ---
 
@@ -184,26 +184,36 @@ almost always zero.
       [decision 0010](docs/decisions/0010-harbour-placement.md), which records that the
       positions are *not* the official ones.
       → **39 of 40 games now finish**, median 286 turns.
-- [ ] **Robber**: position on `GameState` (starting at `board.desert_tile`), 7-handling, blocking
-      that tile's production, and stealing one random card.
-- [ ] **Discard on 7** when holding more than 7 cards. Model it as repeated single-card discard
-      actions rather than choosing a multiset — far friendlier to a flat action space.
+- [x] **The robber**, on `GameState` since it moves during play. Starts on the desert, must
+      always move, blocks its tile's production for everyone, and steals one card drawn
+      uniformly over the victim's *cards* — not their resource types. Cannot rob you, or anyone
+      holding nothing.
+- [x] **Discard on 7**: everyone over 7 cards gives up half, rounded down, in seat order from
+      the roller. **One card per action**, so the choice stays a small discrete action instead of
+      a multiset. The count is fixed when the 7 is rolled — recomputing it from the shrinking
+      hand moved the target and stopped discards at 7 cards instead of at half, which is a bug
+      this caught.
+      → still **40 of 40** random games finish, median 393 turns (up from 286; the robber
+      slows the game, as it should).
+- [x] **Harbours randomised** per board rather than fixed, after confirming the rules sanction
+      it and that no official coastal-edge list is published —
+      [decision 0010](docs/decisions/0010-harbour-placement.md). 280 distinct position sets,
+      gaps always 3 or 4 roads so they never cluster.
 - [ ] **Dev cards**: 25-card deck, buy / hold / play-timing (one per turn, not the turn bought).
       Knight, Road Building, Year of Plenty, Monopoly, Victory Point.
 - [ ] **Largest Army** (3+ knights, 2 VP), including keep-until-beaten.
 - [ ] **Longest Road award**: the 5-segment minimum, the 2 VP, and keep-until-beaten.
       The *measurement* is done — `rules.longest_road_length` and `rules.longest_road_holder`.
-- [ ] **Player-to-player trading.** Needs a design decision first: an unrestricted offer is a
-      multiset-for-multiset exchange, which does not flatten into a discrete action space. Likely
-      a bounded form (give *n* of X for *m* of Y, small *n*, *m*) plus accept/reject. Worth its
-      own decision record, and it interacts with Phase 3's action space.
 - [ ] **Official spiral layout** as an alternative to balanced generation, behind a config flag.
       The house rule makes double-production vertices impossible, so an agent trained only on it
       never learns to value a "double 6" spot —
       [decision 0005](docs/decisions/0005-balanced-board-generation.md).
-- [ ] **Official harbour positions**, replacing the evenly-spaced approximation
-      ([decision 0010](docs/decisions/0010-harbour-placement.md)). Needed before evaluating
-      against a real board or a human.
+
+**Out of scope for this version:** player-to-player trading
+([decision 0011](docs/decisions/0011-no-player-to-player-trading.md)). The target is 1v1, where
+trading hands resources to the only opponent who can beat you, and an unrestricted offer is a
+multiset-for-multiset exchange that does not flatten into a discrete action space. Revisit when
+adding 3–4 player training or human play.
 
 ## Phase 3 — AI surface ⬜
 

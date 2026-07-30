@@ -1,82 +1,117 @@
-# 0010 — Harbour positions are fixed and evenly spaced; only the types are shuffled
+# 0010 — Harbours are randomised per board, but evenly spaced
 
-**Status:** accepted, with a caveat · Phase 2 · **revisit if fidelity matters**
+**Status:** accepted · Phase 2
 
 ## Context
 
-Real Catan puts the nine harbours on the printed sea frame, so both their **positions** and
-their **types** are fixed by the physical components. The "variable" setup lets you shuffle
-the frame pieces, which moves which harbour is where but not where harbours can be.
+Real Catan puts the nine harbours in notches on the printed sea frame. This project
+generates the board rather than reading physical components, so harbour positions have to
+be decided.
 
-This project generates the board rather than reading a physical frame, so harbour positions
-have to be decided. `Images/Catan_board.png` does not settle it — the notches visible around
-its coast are the sea-frame clips, not harbours.
+`Images/Catan_board.png` does not settle it — the notches visible around its coast are the
+sea-frame clips, not harbours.
 
-I do not have the official coastal pattern to hand, and guessing at it and presenting the
-guess as official would be worse than choosing something defensible and saying so.
+**What the published rules actually say** (researched rather than assumed):
+
+- There are **9 harbour pieces**: **four 3:1** generic and **five 2:1**, one per resource.
+- The benefit requires "a settlement or city on a harbor", giving 3:1, or 2:1 at a harbour
+  showing that resource.
+- Harbour positions are **"either fixed or randomized depending on your group's
+  preference"**, and you may **"shuffle the nine harbor tokens"** and place them on the
+  harbours shown on the sea tiles. Board Game Arena exposes a "shuffle frame pieces" option
+  for the same purpose.
+- The rules **do not name which coastal edges** the printed frame's notches sit on. There is
+  no official list to copy.
+
+So randomising harbours is an officially sanctioned setup option, not a deviation — and
+since no coastal-edge list is published, there is nothing more faithful available.
 
 ## Decision
 
-Derive the coastline as an ordered walk and space the harbours evenly along it.
+**Randomise harbour positions per board, constrained to stay evenly spaced.** Both the
+starting point on the coastline and the gap arrangement come from the injected RNG, so a
+seed still reproduces a board exactly.
 
-`topology.COASTAL_CYCLE` walks the 30 coastal roads as a closed loop. It is canonical:
-it starts at the lowest-numbered coastal road and leaves by whichever endpoint leads to the
-lower-numbered neighbour, so it is identical on every run. (The walk exists because every
-perimeter vertex has exactly two coastal roads — the coastline is a single cycle.)
+`topology.COASTAL_CYCLE` walks the 30 coastal roads as a closed loop. The walk exists
+because every perimeter vertex has exactly two coastal roads — the coastline is a single
+cycle — and it is canonical: it starts at the lowest-numbered coastal road and leaves by
+whichever endpoint leads to the lower-numbered neighbour.
 
-`Board.HARBOUR_SPACING = (3, 3, 4) * 3` gives the gaps between consecutive harbours.
-3 + 3 + 4 = 10, three times over = **exactly 30**, so nine harbours land evenly and the walk
-closes without a seam.
+Nine harbours over 30 roads needs gaps summing to 30. Holding every gap to **3 or 4** forces
+exactly six 3s and three 4s (6×3 + 3×4 = 30), so `HARBOUR_SPACING` is that multiset,
+**shuffled per board**, starting from a random point on the cycle.
 
-The nine types — four generic 3:1 and one 2:1 per resource — are **shuffled** with the
-injected RNG. So:
+Keeping gaps in {3, 4} is what does the work: harbours can never cluster, never leave a
+stretch of coast bare, and — because the minimum gap is 3 — **no vertex ever serves two
+harbours**, which keeps `trade_rates` simple.
 
-- **positions never vary** — the same nine coastal roads on every board
-- **types vary by seed** — which is what Catan's variable setup does
+Measured over 4,000 seeds: **280 distinct position sets**, every gap 3 or 4, and every one of
+the 30 coastal roads can host a harbour. Times the type shuffle (9 slots, 4 interchangeable
+generics → 9!/4! = 15,120 arrangements), there is ample variety for training.
 
-A harbour sits on an *edge*, so **both** its endpoint vertices grant it. With this spacing no
-vertex ever serves two harbours, so the 9 harbours occupy 18 distinct vertices.
+An earlier version fixed the positions and used a repeating 3-3-4 pattern. That yielded only
+**10** distinct layouts, because the pattern has period 10 and the set is invariant under a
+shift of 10 — most start offsets collapsed onto each other. Shuffling the multiset instead of
+rotating a fixed pattern is what widened it to 280.
+
+## Two positions per harbour, and only one is usable
+
+A harbour sits on a coastal **road**, so **both** its endpoint vertices grant it — two spots
+to aim for. But those two vertices are adjacent by definition, so the distance rule means the
+first building to claim one **excludes the other**. Each harbour therefore ends up serving at
+most one player, which is the correct behaviour and is asserted by
+`test_only_one_player_can_ever_benefit_from_a_harbour` over full random games.
 
 ## Consequences
 
 **Good**
 
-- Harbours are always reachable and never clustered, so no board is unplayably harbour-poor
-  in one region.
+- Sanctioned by the rules, and the most faithful option available given that no coastal-edge
+  list is published.
+- Harbours vary across games, so an agent cannot overfit to one coastline — 280 position
+  layouts rather than a single fixed one.
+- Never clustered and never sparse, so no board is unplayably harbour-poor in one region.
 - Reproducible from a seed, like everything else.
 - Falls out of the generated geometry, so it generalises to other board sizes with no new
-  data — a 5–6 player board changes `ROW_LENGTHS` and the coastline walk follows.
-- The 18 harbour vertices are distinct, which keeps `trade_rates` simple: no vertex can
-  grant two harbours.
+  data: change `ROW_LENGTHS` and the coastline walk follows.
 
-**⚠️ Not faithful**
+**Cost**
 
-The positions are almost certainly not the official ones. Consequences for training:
-
-- The *value* of specific board positions differs from a real board, so an agent's learned
-  preference for particular settlement spots will not transfer exactly.
-- The *rules* of trading are unaffected — rates, counts and the both-endpoints rule are all
-  standard. Only the geography differs.
-
-To fix it, replace the derived slots with an explicit list of the official coastal roads.
-`_place_harbours` is the only thing to change, and the spacing test is the only test that
-would need updating. Worth doing before any evaluation against a real board or a human.
+- A given board's harbours are not the ones on any particular physical set, so the *value* of
+  specific settlement spots differs from a real board. The trading **rules** — rates, counts,
+  the both-endpoints grant — are all standard; only the geography varies, and it varies in a
+  way the rules explicitly allow.
+- If a fixed layout is ever wanted (to match a physical board, or to remove a source of
+  variance during evaluation), `_place_harbours` is the only thing to change.
 
 ## Alternatives considered
 
-- **Random harbour positions per seed.** Rejected: it adds variance the real game does not
-  have, and can produce clustered or harbour-starved coasts.
+- **A fixed layout guessed at as "official".** Rejected: no published coastal-edge list
+  exists, and presenting a guess as official would be worse than a defensible randomisation
+  that the rules sanction.
+- **Fully random positions, unconstrained.** Rejected: it can cluster several harbours on one
+  short stretch and leave a third of the coast bare, which no physical board does. It could
+  also put two harbours on roads sharing a vertex, complicating `trade_rates` for no benefit.
 - **Harbours on `CORNER_VERTICES`.** Rejected — this is the trap
   [board-geometry.md](../board-geometry.md#6-coastline) warns about. A harbour belongs to a
-  coastal *edge* and grants both its endpoints; the 18 corner vertices are the wrong set,
-  and the 12 notch vertices are coastal too.
+  coastal *edge* and grants both endpoints; the 18 corner vertices are the wrong set, and the
+  12 notch vertices are coastal too.
 
 ## Enforced by
 
 `test_there_are_nine_harbours_four_generic_and_one_per_resource`,
 `test_harbours_sit_on_coastal_roads`,
 `test_harbour_spacing_covers_the_coastline_exactly`,
+`test_harbour_positions_are_randomised_by_seed`,
+`test_randomised_harbours_are_still_evenly_spaced`,
 `test_harbours_are_evenly_spread_and_never_share_a_vertex`,
 `test_both_endpoints_of_a_harbour_road_grant_it`,
-`test_harbour_positions_are_fixed_only_the_types_move`,
+`test_only_one_player_can_ever_benefit_from_a_harbour`,
 `test_harbours_are_part_of_the_board_layout`.
+
+## Sources
+
+- [Catan official rules overview (catan.com)](https://www.catan.com/sites/default/files/2021-06/catan-family-rules-overview.pdf)
+- [How to play Catan — official rules (UltraBoardGames)](https://www.ultraboardgames.com/catan/game-rules.php)
+- [Setup options / variants (Board Game Arena forum)](https://forum.boardgamearena.com/viewtopic.php?t=26914)
+- [Catan rules: setup, turn order, robber, scoring](https://www.catangenerator.org/rule)

@@ -100,11 +100,43 @@ def test_harbour_placement_is_reproducible_and_varies_by_seed():
     assert len(layouts) > 1
 
 
-def test_harbour_positions_are_fixed_only_the_types_move():
-    """Position comes from the coastline walk; the seed only shuffles which harbour
-    lands where — docs/decisions/0010-harbour-placement.md."""
-    positions = {frozenset(make_board(seed).harbours) for seed in range(15)}
-    assert len(positions) == 1, "harbour positions should not depend on the seed"
+def test_harbour_positions_are_randomised_by_seed():
+    """Both where the harbours sit and which is which vary — the rules allow
+    randomising harbours, and no official coastal-edge list is published.
+    docs/decisions/0010-harbour-placement.md."""
+    positions = {frozenset(make_board(seed).harbours) for seed in range(40)}
+    assert len(positions) > 5, "harbour positions should vary with the seed"
+
+
+def test_randomised_harbours_are_still_evenly_spaced():
+    """Randomising must not let harbours cluster or leave a stretch of coast bare."""
+    for seed in range(40):
+        board = make_board(seed)
+        assert len(board.harbours) == 9
+        positions = sorted(T.COASTAL_CYCLE.index(road) for road in board.harbours)
+        gaps = [b - a for a, b in zip(positions, positions[1:])]
+        gaps.append(len(T.COASTAL_CYCLE) - positions[-1] + positions[0])
+        assert sum(gaps) == len(T.COASTAL_CYCLE)
+        assert set(gaps) <= {3, 4}, f"seed {seed} clustered harbours: {gaps}"
+
+
+def test_only_one_player_can_ever_benefit_from_a_harbour():
+    """A harbour sits on a road, so its two settlement spots are adjacent — the
+    distance rule means at most one of them is ever built on. Two positions to aim
+    for, but the first building to claim one excludes the other.
+    """
+    board = make_board(3)
+    for road in board.harbours:
+        u, v = T.ROAD_VERTICES[road]
+        assert v in T.VERTEX_NEIGHBOURS[u], "harbour endpoints must be adjacent"
+
+    from helpers import play_random_game
+    for seed in range(6):
+        state = play_random_game(seed=seed, max_actions=2500)
+        for road in state.board.harbours:
+            owners = [state.vertex_owner[v] for v in T.ROAD_VERTICES[road]]
+            claimed = [o for o in owners if o]
+            assert len(claimed) <= 1, f"harbour {road} claimed twice: {owners}"
 
 
 def test_harbours_are_part_of_the_board_layout():

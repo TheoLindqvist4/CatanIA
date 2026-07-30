@@ -28,6 +28,7 @@ from helpers import (
     put_building,
     put_road,
     roll_sequence,
+    roll_to_build,
 )
 
 
@@ -192,7 +193,7 @@ def test_rolling_is_only_allowed_in_the_roll_phase():
         rules.roll_dice(state)  # still in setup
     complete_setup(state)
     rules.roll_dice(state)
-    assert state.phase is Phase.BUILD
+    assert state.phase is not Phase.ROLL, "a roll must hand over to some decision"
     with pytest.raises(IllegalAction):
         rules.roll_dice(state)
 
@@ -534,7 +535,7 @@ def test_running_out_of_cities_stops_upgrading():
 def test_ending_a_turn_advances_to_the_next_player_and_the_roll_phase():
     state = fresh(num_players=3, player_order=[3, 1, 2], seed=1)
     complete_setup(state)
-    rules.roll_dice(state)
+    roll_to_build(state)
     assert state.current_player == 3
 
     rules.apply(state, end_turn())
@@ -547,7 +548,7 @@ def test_end_turn_is_always_available_so_a_player_can_never_be_stuck():
     complete_setup(state)
     for _ in range(50):
         if state.phase is Phase.ROLL:
-            rules.roll_dice(state)
+            roll_to_build(state)
         assert end_turn() in rules.legal_actions(state)
         rules.apply(state, end_turn())
 

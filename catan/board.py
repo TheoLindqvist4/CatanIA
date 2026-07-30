@@ -40,9 +40,12 @@ GENERIC_HARBOUR = None
 #: The nine harbours: four generic 3:1, plus one 2:1 for each resource.
 HARBOUR_TYPES = (GENERIC_HARBOUR,) * 4 + tuple(Resource)
 
-#: Gaps between consecutive harbours walking :data:`COASTAL_CYCLE`. 3+3+4 repeated three
-#: times is exactly 30, so nine harbours land evenly and no vertex serves two of them.
-HARBOUR_SPACING = (3, 3, 4) * 3
+#: Gaps between consecutive harbours walking :data:`COASTAL_CYCLE`, as a multiset that is
+#: shuffled per board. Nine harbours over a 30-road coastline needs gaps summing to 30;
+#: with every gap 3 or 4 that forces exactly six 3s and three 4s (6x3 + 3x4 = 30). Keeping
+#: gaps in {3, 4} is what stops harbours clustering or leaving a stretch of coast bare,
+#: and guarantees no vertex ever serves two of them.
+HARBOUR_SPACING = (3,) * 6 + (4,) * 3
 
 
 class Production(NamedTuple):
@@ -197,16 +200,26 @@ class Board:
         }
 
     def _place_harbours(self, rng):
-        """Put the nine harbours on coastal roads, evenly spaced, types shuffled.
+        """Put the nine harbours on coastal roads: random, but evenly spaced.
 
-        Positions come from walking :data:`COASTAL_CYCLE` with
-        :data:`HARBOUR_SPACING`; only which harbour lands where is random. See
-        ``docs/decisions/0010-harbour-placement.md`` — real Catan prints harbours on a
-        fixed sea frame, and this is an even-spacing approximation of it.
+        Both the starting point on the coastline and the rotation of the gap pattern
+        are drawn from ``rng``, so harbours land somewhere different every game while
+        never clustering — 90 distinct position sets, times the type shuffle.
+
+        Randomising is sanctioned by the rules: harbour positions are "either fixed or
+        randomized depending on your group's preference", and the nine harbour tokens
+        may be shuffled. The published rules do not name the coastal edges the printed
+        frame uses, so there is no official list to follow.
+        See ``docs/decisions/0010-harbour-placement.md``.
         """
-        slots, index = [], 0
-        for gap in HARBOUR_SPACING:
-            slots.append(COASTAL_CYCLE[index])
+        coast = len(COASTAL_CYCLE)
+        gaps = list(HARBOUR_SPACING)
+        rng.shuffle(gaps)
+
+        index = rng.randrange(coast)
+        slots = []
+        for gap in gaps:
+            slots.append(COASTAL_CYCLE[index % coast])
             index += gap
 
         types = list(HARBOUR_TYPES)

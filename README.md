@@ -8,9 +8,8 @@ sous une forme lisible par une machine, afin d'**entraîner une IA** à jouer. L
 un *consommateur* du moteur, jamais une partie de celui-ci.
 
 > 🚧 **Projet en cours.** Le moteur (`catan/`) gère une partie complète de bout en bout : mise en
-> place, économie, construction, villes, banque, échange avec les ports, points de victoire et
-> victoire à 10. Il manque encore le voleur, les cartes de développement et l'échange entre
-> joueurs.
+> place, économie, construction, villes, banque, échange avec les ports, voleur et victoire à 10.
+> Il manque encore les cartes de développement et les deux cartes de bonus (armée / route).
 >
 > - **[ROADMAP.md](ROADMAP.md)** — les phases, ce qui est fait et ce qui reste.
 > - **[docs/engine.md](docs/engine.md)** — comment le moteur s'articule et comment piloter une
@@ -20,7 +19,7 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 
 ## ⭐ État actuel
 
-**Fonctionne** (320 tests) :
+**Fonctionne** (363 tests) :
 
 - 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
   toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
@@ -35,22 +34,30 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 - 🎲 **Production** selon les dés, doublée pour les villes.
 - 🏦 **La banque** : 19 cartes par ressource, conservation des cartes (toujours 95 au total) et la
   règle officielle de pénurie.
-- 🔄 **Échange avec la banque** à 4:1, et **les ports** à 3:1 et 2:1.
+- 🔄 **Échange avec la banque** à 4:1, et **les ports** à 3:1 et 2:1. Ports placés aléatoirement
+  mais régulièrement espacés ; les deux extrémités d'un port en donnent le bénéfice, mais la règle
+  de distance fait qu'un seul joueur peut en profiter.
+- 🦹 **Le voleur** : gestion du 7, défausse de la moitié de la main au-delà de 7 cartes, blocage de
+  la production de sa tuile, et vol d'une carte au hasard.
 - 🏆 **Points de victoire et victoire à 10.**
 - 🛤️ **Plus longue route** : chemin simple strict, interrompu par une construction adverse.
 - 👥 **2 à 4 joueurs.**
 - 🔁 **Déterminisme** : une partie est entièrement reproductible à partir d'une graine (`seed`).
 
-**Pas encore implémenté :** le voleur et la gestion du 7, la défausse au-delà de 7 cartes, les
-cartes de développement, l'armée la plus puissante, l'attribution des 2 points de la plus longue
-route, l'échange entre joueurs, ainsi que l'espace d'actions et d'observations destiné à l'IA.
-Détails dans [ROADMAP.md](ROADMAP.md).
+**Pas encore implémenté :** les cartes de développement, l'armée la plus puissante, l'attribution
+des 2 points de la plus longue route, ainsi que l'espace d'actions et d'observations destiné à
+l'IA. Détails dans [ROADMAP.md](ROADMAP.md).
+
+**Volontairement hors périmètre :** l'échange entre joueurs. La cible est le 1 contre 1, où céder
+des ressources profite au seul adversaire capable de vous battre — et une offre libre est un
+échange « ensemble contre ensemble » qui ne se ramène pas à un espace d'actions discret.
+Voir [décision 0011](docs/decisions/0011-no-player-to-player-trading.md).
 
 > 📈 **L'échange a rendu les parties jouables.** Avant lui, seules **4 parties sur 40** atteignaient
 > 10 points : une colonie coûte quatre ressources différentes, or les colonies d'un joueur n'en
 > atteignent souvent que trois, et sans conversion possible les joueurs restaient bloqués avec plus
-> de 100 cartes inutilisables. Avec l'échange : **39 parties sur 40** se terminent.
-> Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
+> de 100 cartes inutilisables. Aujourd'hui : **40 parties sur 40** se terminent (393 tours en
+> médiane). Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
 
 ## Plateau du jeu Catan
 

@@ -27,7 +27,9 @@ from catan.actions import (
     build_city,
     build_road,
     build_settlement,
+    discard,
     end_turn,
+    move_robber,
     trade_with_bank,
 )
 from catan.board import GENERIC_HARBOUR, ROBBER_ROLL
@@ -41,6 +43,7 @@ from catan.resources import (
     SPECIFIC_HARBOUR_RATE,
 )
 from catan.state import (
+    HAND_LIMIT,
     NO_OWNER,
     PIECE_VICTORY_POINTS,
     PIECE_YIELD,
@@ -50,8 +53,10 @@ from catan.state import (
 )
 from catan.topology import (
     NUM_ROADS,
+    NUM_TILES,
     NUM_VERTICES,
     ROAD_VERTICES,
+    TILE_VERTICES,
     VERTEX_NEIGHBOURS,
     VERTEX_ROADS,
 )
@@ -184,6 +189,63 @@ def can_trade_with_bank(state, player, give, take, rates=None):
 
 
 # --------------------------------------------------------------------------- #
+# THE ROBBER                                                                  #
+# --------------------------------------------------------------------------- #
+
+def discard_count(state, player):
+    """How many cards ``player`` gives up on a 7: half the hand, rounded down.
+
+    Holding 9 means discarding 4 and keeping 5 — half *rounded down* is what you lose,
+    so an odd hand keeps the extra card.
+
+    Read once, when the 7 is rolled, and stored in ``state.discards_owed``. Recomputing
+    it as the hand shrinks would move the target and stop the discards early.
+    """
+    return resources.total(state.hands[player]) // 2
+
+
+def must_discard(state, player):
+    """Whether ``player``'s hand is over the limit, i.e. a 7 costs them cards."""
+    return resources.total(state.hands[player]) > HAND_LIMIT
+
+
+def owes_discard(state, player):
+    """Whether ``player`` still has cards to give up for the current 7."""
+    return state.discards_owed[player] > 0
+
+
+def victims_at(state, tile, robber):
+    """Players ``robber`` could steal from if the robber went to ``tile``.
+
+    Anyone with a building on the tile, who holds at least one card, and is not the
+    robber themselves. Stealing from an empty hand is not a choice the rules offer.
+    """
+    return tuple(sorted({
+        owner
+        for vertex in TILE_VERTICES[tile]
+        for owner in (state.vertex_owner[vertex],)
+        if owner != NO_OWNER
+        and owner != robber
+        and resources.total(state.hands[owner]) > 0
+    }))
+
+
+def can_move_robber(state, player, tile, victim):
+    """Whether the robber may go to ``tile`` and rob ``victim`` (0 for nobody).
+
+    The robber must actually move — it may not be left where it is — and the victim
+    must be a valid choice for that tile. ``victim`` of 0 is only legal when the tile
+    offers nobody to rob.
+    """
+    if not 1 <= tile <= NUM_TILES:
+        return False
+    if tile == state.robber_tile:
+        return False
+    options = victims_at(state, tile, player)
+    return victim in options if options else victim == 0
+
+
+# --------------------------------------------------------------------------- #
 # LEGAL ACTIONS                                                               #
 # --------------------------------------------------------------------------- #
 
@@ -208,6 +270,23 @@ def legal_actions(state):
             for r in range(1, NUM_ROADS + 1)
             if can_place_setup_road(state, player, r)
         ]
+
+    if state.phase is Phase.DISCARD:
+        # One card at a time, so the choice stays a small discrete action.
+        return [
+            discard(resource)
+            for resource in range(NUM_RESOURCES)
+            if state.hands[player][resource] > 0
+        ]
+
+    if state.phase is Phase.MOVE_ROBBER:
+        actions = []
+        for tile in range(1, NUM_TILES + 1):
+            if tile == state.robber_tile:
+                continue
+            options = victims_at(state, tile, player)
+            actions += [move_robber(tile, victim) for victim in (options or (0,))]
+        return actions
 
     if state.phase is Phase.BUILD:
         actions = [end_turn()]
@@ -261,6 +340,10 @@ def apply(state, action):
         _apply_setup_settlement(state, player, action)
     elif state.phase is Phase.SETUP_ROAD:
         _apply_setup_road(state, player, action)
+    elif state.phase is Phase.DISCARD:
+        _apply_discard(state, player, action)
+    elif state.phase is Phase.MOVE_ROBBER:
+        _apply_move_robber(state, player, action)
     elif state.phase is Phase.BUILD:
         _apply_build(state, player, action)
     elif state.phase is Phase.ROLL:
@@ -269,6 +352,60 @@ def apply(state, action):
         raise IllegalAction("the game is over")
 
     return state
+
+
+def _apply_discard(state, player, action):
+    if action.type is not ActionType.DISCARD:
+        raise IllegalAction(f"must discard a card, got {action!r}")
+    resource = action.position
+    if not 0 <= resource < NUM_RESOURCES:
+        raise IllegalAction(f"not a resource: {action!r}")
+    if state.hands[player][resource] <= 0:
+        raise IllegalAction(f"no {resources.Resource(resource).name.lower()} to discard")
+
+    state.hands[player][resource] -= 1
+    state.bank[resource] += 1
+    state.discards_owed[player] -= 1
+    _advance_after_discards(state)
+
+
+def _advance_after_discards(state):
+    """Drop anyone who has finished discarding, then move on to the robber."""
+    while state.pending_discards and not owes_discard(state, state.pending_discards[0]):
+        state.pending_discards.pop(0)
+    state.phase = Phase.DISCARD if state.pending_discards else Phase.MOVE_ROBBER
+
+
+def _apply_move_robber(state, player, action):
+    if action.type is not ActionType.MOVE_ROBBER:
+        raise IllegalAction(f"must move the robber, got {action!r}")
+    tile, victim = action.position, action.extra
+    if not can_move_robber(state, player, tile, victim):
+        raise IllegalAction(f"cannot {action!r}")
+
+    state.robber_tile = tile
+    if victim:
+        _steal_one_card(state, player, victim)
+    state.phase = Phase.BUILD
+
+
+def _steal_one_card(state, thief, victim):
+    """Take one card at random from ``victim``.
+
+    Drawn uniformly over their *cards*, not their resource types, so a hand of five wood
+    and one ore gives up wood five times out of six.
+    """
+    hand = state.hands[victim]
+    total = resources.total(hand)
+    if total <= 0:
+        return
+    pick = state.rng.randrange(total)
+    for resource, count in enumerate(hand):
+        if pick < count:
+            hand[resource] -= 1
+            state.hands[thief][resource] += 1
+            return
+        pick -= count
 
 
 def _apply_setup_settlement(state, player, action):
@@ -400,10 +537,15 @@ def _check_road(position):
 # --------------------------------------------------------------------------- #
 
 def roll_dice(state):
-    """Roll 2d6, pay out production, and move to the build phase.
+    """Roll 2d6, resolve the result, and hand control to the next decision.
 
     Two independent dice, not one uniform draw over 2..12 — the triangular
     distribution is the whole point of Catan's probabilities.
+
+    A 7 pays nobody. Instead everyone over the hand limit discards down to half
+    (:attr:`Phase.DISCARD`, in turn order starting from the roller), and then the roller
+    moves the robber (:attr:`Phase.MOVE_ROBBER`). Anything else pays production and goes
+    straight to :attr:`Phase.BUILD`.
 
     Returns:
         int: the roll.
@@ -414,18 +556,39 @@ def roll_dice(state):
     roll = state.rng.randint(1, DICE_FACES) + state.rng.randint(1, DICE_FACES)
     state.last_roll = roll
 
-    # Phase 2 turns a 7 into: move the robber, steal a card, discard above 7 cards.
-    # Until then a 7 simply pays nobody, which the board's payout index guarantees
-    # anyway — this branch is documentation, not logic.
-    if roll != ROBBER_ROLL:
+    if roll == ROBBER_ROLL:
+        begin_robber(state)
+    else:
         distribute(state, roll)
+        state.phase = Phase.BUILD
 
-    state.phase = Phase.BUILD
     return roll
+
+
+def begin_robber(state):
+    """Set up the aftermath of a 7: who discards, then the robber move.
+
+    Split out of :func:`roll_dice` so tests can reach this position without waiting for
+    a 7, and so there is only one place that decides who owes what. Duplicating it in a
+    test helper is how the discard count silently drifted once already.
+
+    Discard order starts at the roller and follows turn order, so it depends on the seat
+    order rather than on player numbering.
+    """
+    roller = state.turn_player
+    start = state.player_order.index(roller)
+    rotated = state.player_order[start:] + state.player_order[:start]
+
+    state.pending_discards = [p for p in rotated if must_discard(state, p)]
+    for player in state.pending_discards:
+        state.discards_owed[player] = discard_count(state, player)
+    _advance_after_discards(state)
 
 
 def distribute(state, roll):
     """Pay every player for their buildings on ``roll``. Cities yield double.
+
+    The tile under the robber produces nothing, for anybody.
 
     Bounded by the bank. The official shortage rule: if the bank cannot cover everything
     owed of a resource, **nobody** receives any of it — unless exactly one player is owed
@@ -443,6 +606,8 @@ def distribute(state, roll):
             continue
         amount = PIECE_YIELD[state.vertex_piece[vertex]]
         for production in productions:
+            if production.tile == state.robber_tile:
+                continue  # blocked by the robber
             owed[owner][production.resource] += amount
 
     paid = {player: [0] * NUM_RESOURCES for player in state.players}

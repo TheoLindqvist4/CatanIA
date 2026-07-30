@@ -31,7 +31,8 @@ the reasoning at the time is the point.
 | [0007](decisions/0007-package-layout-rewrite-vs-incremental.md) | Build `catan/` fresh | accepted |
 | [0008](decisions/0008-mutating-apply-plus-clone.md) | `apply` mutates; copy with `clone()` | accepted |
 | [0009](decisions/0009-immutable-board-mutable-state.md) | The board is immutable; mutable state lives in `GameState` | accepted |
-| [0010](decisions/0010-harbour-placement.md) | Harbour positions are fixed and evenly spaced; only the types shuffle | accepted, **not faithful** — revisit |
+| [0010](decisions/0010-harbour-placement.md) | Harbours are randomised per board, but evenly spaced | accepted |
+| [0011](decisions/0011-no-player-to-player-trading.md) | No player-to-player trading in this version | accepted — deferred |
 
 ## Worth knowing
 
@@ -54,10 +55,19 @@ Consequences that are easy to trip over:
   39 of 40 after** ([engine.md](engine.md#trading-is-what-made-games-finishable)). A
   settlement needs four different resources and most players' buildings reach only three, so
   without a way to convert a surplus they stopped permanently, one of them holding 113 cards.
-- **Harbour positions are not the official ones**
-  ([0010](decisions/0010-harbour-placement.md)). The trading *rules* are standard; only the
-  geography is an even-spacing approximation, so learned preferences for particular
-  settlement spots will not transfer exactly to a real board.
+- **Harbours are randomised, and each serves only one player**
+  ([0010](decisions/0010-harbour-placement.md)). The rules sanction randomising them and no
+  official coastal-edge list is published, so positions vary per board — 280 layouts, gaps
+  always 3 or 4 roads. A harbour is on an *edge*, so both endpoints grant it, but they are
+  adjacent, so the distance rule means the first building to claim one excludes the other.
+- **A discard count must be fixed when the 7 is rolled**, not recomputed. Half of a
+  *shrinking* hand is a moving target: it stopped discards at 7 cards instead of at half.
+  `state.discards_owed` stores it, and `rules.begin_robber` is the single place that sets it —
+  a test helper that duplicated that logic is what let the bug through.
+- **During a discard, `current_player` is not the turn holder.** It is whoever owes cards,
+  usually an opponent. Use `state.turn_player` for the turn holder.
+- **No player-to-player trading** ([0011](decisions/0011-no-player-to-player-trading.md)),
+  deliberately, for the 1v1 target.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

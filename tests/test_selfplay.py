@@ -13,7 +13,7 @@ pytestmark = pytest.mark.slow
 
 import catan.topology as T
 from catan import rules
-from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES
+from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, total
 from catan.state import (
     MAX_CITIES,
     MAX_ROADS,
@@ -104,6 +104,7 @@ def assert_invariants(state):
 
     # --- phase and turn bookkeeping ---
     assert state.current_player in state.players
+    assert state.turn_player in state.players
     if state.phase is Phase.GAME_OVER:
         assert state.winner in state.players
         assert rules.victory_points(state, state.winner) >= 10
@@ -113,6 +114,26 @@ def assert_invariants(state):
         assert state.setup_step < 2 * state.num_players
     if state.last_roll is not None:
         assert 2 <= state.last_roll <= 12
+
+    # --- the robber ---
+    assert 1 <= state.robber_tile <= T.NUM_TILES
+
+    # --- discards only pend during the discard phase, and only for players who owe ---
+    if state.phase is Phase.DISCARD:
+        assert state.pending_discards, "discard phase with nobody owing"
+        assert rules.owes_discard(state, state.pending_discards[0]), \
+            "the player being asked to discard does not owe any cards"
+        assert state.current_player == state.pending_discards[0]
+    else:
+        assert not state.pending_discards, \
+            f"{state.pending_discards} still owe discards in {state.phase.name}"
+    assert all(p in state.players for p in state.pending_discards)
+    assert len(set(state.pending_discards)) == len(state.pending_discards)
+    for player in state.players:
+        assert state.discards_owed[player] >= 0
+        if state.discards_owed[player] > 0:
+            assert player in state.pending_discards
+            assert state.discards_owed[player] <= total(state.hands[player])
 
 
 @pytest.mark.parametrize("num_players", [2, 3, 4])

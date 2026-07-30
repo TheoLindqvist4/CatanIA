@@ -33,6 +33,8 @@ arity makes that a lookup rather than a parse:
 | `BUILD_ROAD` | road id | — |
 | `BUILD_SETTLEMENT` / `BUILD_CITY` | vertex id | — |
 | `TRADE_WITH_BANK` | resource given | resource received |
+| `MOVE_ROBBER` | tile id | player to rob, 0 for nobody |
+| `DISCARD` | resource discarded | — |
 
 ---
 
@@ -46,6 +48,9 @@ state.vertex_piece[20]   # Piece.NONE / SETTLEMENT / CITY
 state.edge_owner[30]     # 0 or a player number
 state.hands[1]           # [wood, brick, sheep, wheat, ore]
 state.settlements_left[1], state.cities_left[1], state.roads_left[1]
+state.bank               # the supply; hands + bank is always 95
+state.robber_tile        # 1..19
+state.discards_owed[1]   # cards player 1 still owes for the current 7
 ```
 
 Arrays rather than sets of positions, because the Phase 3 encoder wants fixed-width vectors
@@ -70,16 +75,31 @@ indexes directly everywhere.
 ## Phases
 
 ```
-SETUP_SETTLEMENT ──▶ SETUP_ROAD ──▶ (repeat 2n times) ──▶ ROLL ⇄ BUILD ──▶ GAME_OVER
+SETUP_SETTLEMENT ⇄ SETUP_ROAD  (2n placements, snake order)
+        │
+        ▼
+      ROLL ─────── anything but a 7 ──────▶ BUILD ──▶ GAME_OVER
+        │                                    ▲
+        └── a 7 ──▶ DISCARD ──▶ MOVE_ROBBER ─┘
+                   (0+ players,
+                    1 card each)
 ```
 
-The two setup phases alternate per placement, so **every setup step is one atomic action** —
-which is what an RL agent needs. Placement order is a snake: round one in `player_order`,
-round two reversed. The second settlement pays out its adjacent tiles immediately.
+**Every phase asks for exactly one atomic action.** That is why setup alternates
+settlement/road per placement rather than asking for a pair, and why discarding is one card
+per action rather than a chosen multiset — a multiset does not flatten into a discrete action
+space, and one-card steps do.
+
+Setup order is a snake: round one in `player_order`, round two reversed. The second
+settlement pays out its adjacent tiles immediately.
 
 `ROLL` is not a decision. `legal_actions` returns `[]` there and the driver calls
 `roll_dice`, because a dice roll is environment stochasticity, not a move. Phase 3's `env`
 will do this automatically.
+
+`DISCARD` is the one phase where **`current_player` is not the player whose turn it is** —
+it is whoever owes cards, which is usually an opponent. Use `state.turn_player` when you
+mean the turn holder and `state.current_player` when you mean "who must act now".
 
 ---
 
@@ -131,12 +151,17 @@ offered by one and rejected by the other**. `apply` raises `IllegalAction` for a
 road connectivity, including *not* building through an opponent's building · resource costs
 actually charged · production, with cities yielding double and the bank's shortage rule ·
 city upgrades returning the settlement to the supply · piece limits · victory points and the
-win at 10 · longest-road measurement · **the bank, with cards conserved** · **4:1 bank
-trading** · **harbours at 3:1 and 2:1** · 2–4 players · full determinism from a seed.
+win at 10 · longest-road measurement · the bank, with cards conserved · 4:1 bank trading ·
+harbours at 3:1 and 2:1 · **the robber, 7-handling, discarding and stealing** ·
+2–4 players · full determinism from a seed.
 
-❌ **Not yet** (Phase 2): the robber and 7-handling · discarding above 7 cards · development
-cards · Largest Army · the Longest Road *award* (the measurement exists; the 2 points do
-not) · player-to-player trading.
+Random 2-player games: **40 of 40** reach 10 points, median 393 turns.
+
+❌ **Not yet** (Phase 2): development cards · Largest Army · the Longest Road *award* (the
+measurement exists; the 2 points do not).
+
+🚫 **Deliberately out of scope**: player-to-player trading
+([decision 0011](decisions/0011-no-player-to-player-trading.md)).
 
 ### Trading is what made games finishable
 
@@ -185,10 +210,39 @@ one card back:
 | any generic (3:1) harbour | 3 on everything |
 | the matching specific (2:1) harbour | 2 on that resource |
 
-A harbour sits on a coastal *edge*, so a building on **either** endpoint grants it. Positions
-are fixed and evenly spaced round the coastline; only which harbour is where varies by seed —
-[decision 0010](decisions/0010-harbour-placement.md), which also records that the positions
-are not the official ones.
+A harbour sits on a coastal *edge*, so a building on **either** endpoint grants it — two spots
+to aim for. But those two vertices are adjacent, so the distance rule means the first building
+to claim one **excludes the other**: each harbour serves at most one player.
+
+Harbour positions and types are both randomised per board, kept to gaps of 3 or 4 roads so
+they never cluster. The rules sanction randomising them, and no official coastal-edge list is
+published — [decision 0010](decisions/0010-harbour-placement.md).
+
+There is **no player-to-player trading**, deliberately —
+[decision 0011](decisions/0011-no-player-to-player-trading.md). In 1v1 it hands resources to
+the only person who can beat you, and an unrestricted offer is a multiset-for-multiset
+exchange that does not flatten into a discrete action space.
+
+## The robber
+
+`state.robber_tile` starts on `board.desert_tile` and moves during play, so it lives on the
+state, not the shared board ([decision 0009](decisions/0009-immutable-board-mutable-state.md)).
+
+Rolling a **7** pays nobody. Instead:
+
+1. Everyone holding **more than 7** cards discards **half, rounded down** — so 9 cards means
+   losing 4 and keeping 5. The count is fixed when the 7 is rolled and stored in
+   `state.discards_owed`; recomputing it from the shrinking hand would move the target and
+   stop the discards early. Order starts at the roller and follows seat order.
+2. The roller then moves the robber. It **must** move — the tile it is on is not a legal
+   destination — and may rob one player with a building on the destination tile.
+
+A robbed card is drawn uniformly over the victim's **cards**, not over their resource types,
+so a hand of five wood and one ore gives up wood five times in six. You cannot rob yourself,
+and cannot rob a player holding nothing — if the destination offers no victim, the action
+carries `extra = 0`.
+
+The tile under the robber **produces nothing for anyone** until it moves again.
 
 ---
 

@@ -134,6 +134,36 @@ def extend_to_free_vertex(state, player, limit=12):
     raise AssertionError(f"player {player} could not reach a free vertex")
 
 
+def roll_to_build(state, rng=None):
+    """Roll, resolving a 7 (discards then the robber) so the state reaches BUILD.
+
+    Most tests want "the turn has started"; only the robber tests care how it got there.
+    """
+    rng = rng or random.Random(0)
+    roll = rules.roll_dice(state)
+    while state.phase in (Phase.DISCARD, Phase.MOVE_ROBBER):
+        rules.apply(state, rng.choice(rules.legal_actions(state)))
+    assert state.phase is Phase.BUILD
+    return roll
+
+
+def roll_until(state, wanted, limit=500, rng=None):
+    """Keep taking turns until ``wanted`` is rolled. Returns the state in that moment.
+
+    Used to reach a 7 without hand-crafting one.
+    """
+    rng = rng or random.Random(0)
+    for _ in range(limit):
+        if state.phase is Phase.ROLL:
+            if rules.roll_dice(state) == wanted:
+                return state
+        actions = rules.legal_actions(state)
+        if not actions:
+            break
+        rules.apply(state, actions[0])
+    raise AssertionError(f"never rolled a {wanted}")
+
+
 def roll_sequence(state, count):
     """Roll ``count`` times, resetting the phase between rolls.
 
