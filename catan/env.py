@@ -34,6 +34,7 @@ import random
 
 from catan import action_space, encoder, rules
 from catan.state import GameState, Phase
+from catan.view import PublicView
 
 #: Games are stopped rather than run forever. Random play reaches 15 points in a median 435
 #: turns, so this is generous — a real agent finishes far sooner.
@@ -153,6 +154,10 @@ class CatanEnv:
         mask = action_space.legal_mask(state)
         info = {
             "player": player,
+            # What this player may see of the board, for agents that reason about
+            # positions rather than vectors. An explicit allow-list, so an agent cannot
+            # read the opponent's cards even by accident — see catan.view.
+            "view": PublicView(state, player),
             "mask": mask,
             "legal": [i for i, flag in enumerate(mask) if flag],
             "phase": state.phase,

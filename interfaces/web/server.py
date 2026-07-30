@@ -87,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             if path == "/api/game":
                 game = GAMES.new(
-                    opponent=body.get("opponent", "greedy"),
+                    opponent=body.get("opponent", "hard"),
                     rules_name=body.get("rules", "ranked1v1"),
                     seed=body.get("seed"),
                 )

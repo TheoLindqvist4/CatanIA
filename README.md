@@ -126,12 +126,14 @@ save(env.state, "board.png")
    Puis ouvrir <http://127.0.0.1:8000>. On clique directement sur le plateau pour poser une
    colonie, une route ou une ville ; les emplacements légaux clignotent. Le dé, les mains, les
    cartes, la banque, le voleur et le journal de la partie sont affichés en permanence.
-   Aucune dépendance : uniquement la bibliothèque standard.
+   L'adversaire se choisit dans le menu déroulant — `hard` par défaut. Aucune dépendance :
+   uniquement la bibliothèque standard.
 
 4. ⌨️ **Ou jouer dans le terminal** :
    ```sh
-   python -m interfaces.cli                          # vous contre l'agent glouton
-   python -m interfaces.cli --agents greedy random   # observer deux agents
+   python -m interfaces.cli                          # vous contre l'IA la plus forte
+   python -m interfaces.cli --agents human easy      # un adversaire plus accessible
+   python -m interfaces.cli --agents hard greedy     # observer deux agents
    python -m interfaces.cli --games 20 --quiet       # comparer, résultats seuls
    python -m interfaces.cli --render out/            # écrire un PNG par action
    ```
@@ -169,6 +171,8 @@ CatanIA/
 │   │-- 🎯 action_space.py    #   324 indices + masque de légalité
 │   │-- 👁️ encoder.py         #   l'observation destinée au réseau
 │   │-- 🕹️ env.py             #   environnement reset / step
+│   │-- 👓 view.py            #   ce qu'un joueur a le droit de voir (liste blanche)
+│   │-- 🧠 heuristics.py      #   évaluation des positions (valeur marginale)
 │   │-- 🤖 agents.py          #   agents de référence et arène de matchs
 │-- 🖥️ interfaces/            # Les seules parties qui affichent quelque chose
 │   │-- 🖼️ render.py          #   rendu du plateau en PNG
@@ -201,6 +205,31 @@ Cela supprime environ 440 lignes de données maintenues à la main, rend impossi
 désynchronisation entre les relations (deux entrées de l'ancienne table route→routes étaient
 incorrectes, ce qui faussait silencieusement le calcul de la plus longue route), et accélère les
 recherches d'un facteur 145. Détails et schémas : **[docs/board-geometry.md](docs/board-geometry.md)**.
+
+## 🤖 L'adversaire
+
+`HeuristicAgent` choisit **où**, pas seulement **quoi** — c'est toute la différence avec l'agent
+glouton, qui ordonnait bien ses constructions puis plaçait au hasard. L'idée centrale est la
+**valeur marginale** : une colonie ne vaut pas la somme de ses tuiles, elle vaut ce que ces tuiles
+ajoutent à ce que l'on produit déjà. Un troisième blé vaut bien moins qu'un premier minerai.
+
+Trois niveaux, réglés par un seul bouton — du **bruit** ajouté à chaque évaluation. Un adversaire
+facile *se trompe* sur la valeur des emplacements, comme un joueur humain plus faible ; on ne lui
+retire aucune règle. Sur 60 parties, sièges inversés :
+
+| | | | |
+|---|---|---|---|
+| hard vs random | 98.3% | hard vs medium | 73.7% |
+| hard vs greedy | 96.7% | hard vs easy | 80.0% |
+| medium vs greedy | 96.6% | medium vs easy | 69.5% |
+| easy vs greedy | 91.7% | greedy vs random | 75.0% |
+
+**Il ne peut pas tricher.** Un agent ne reçoit pas l'état de la partie mais un
+[`PublicView`](catan/view.py) à liste blanche explicite : lire la main de l'adversaire lève une
+`AttributeError`. Un test rejoue une partie entière et exige le même coup à chaque décision une
+fois les cartes cachées de l'adversaire réécrites.
+
+Détails : [décision 0016](docs/decisions/0016-heuristic-opponent-and-difficulty.md).
 
 ## 🧪 Tests
 

@@ -44,6 +44,8 @@ the reasoning at the time is the point.
 | [0012](decisions/0012-development-card-modelling.md) | How development cards are modelled | accepted |
 | [0013](decisions/0013-ranked-1v1-ruleset.md) | Ranked 1v1 is the target ruleset | accepted |
 | [0014](decisions/0014-ai-surface.md) | The AI surface: action space, observations, environment | accepted |
+| [0015](decisions/0015-public-view-instead-of-a-cheating-agent.md) | Agents see a `PublicView`, not the state | accepted |
+| [0016](decisions/0016-heuristic-opponent-and-difficulty.md) | A heuristic opponent, with difficulty as noise | accepted |
 
 ## Worth knowing
 
@@ -116,6 +118,17 @@ Consequences that are easy to trip over:
   and roads on an integer lattice, so `interfaces/render.py` is one linear map to pixels.
   The earlier FullStackCatan page stepped columns by `tileWidth * 0.87` and overlapped
   neighbouring tiles by 13%; pointy-top hexes tile at exactly one full width.
+- **An agent is handed a `PublicView`, and hidden fields raise `AttributeError`.** The
+  allow-list is deny-by-default, so a new field on `GameState` is invisible to agents until
+  someone adds it deliberately ([0015](decisions/0015-public-view-instead-of-a-cheating-agent.md)).
+  `view.my_hand` returns a *copy* — an agent cannot edit the game it is playing.
+- **Position value is marginal, not absolute.** `heuristics.settlement_value` divides each
+  tile's rate by what the player already produces of that resource. Do not "simplify" it back
+  to a sum of pips: that is the encoder's `pip_potential` feature, which answers a different
+  question ([0016](decisions/0016-heuristic-opponent-and-difficulty.md)).
+- **`VERTEX_TILES` and `TILE_VERTICES` are both keyed by plain integers**, so swapping them
+  type-checks, runs, and silently produces nonsense. It happened once, in `robber_damage`.
+  When indexing either, the variable name should say which id it holds.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

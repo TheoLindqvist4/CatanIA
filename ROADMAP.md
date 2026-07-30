@@ -404,35 +404,68 @@ A local web app: Python serves the engine, the browser draws the board and posts
 - [x] **45 tests**, including a full game played over real HTTP, illegal actions returning 400,
       unknown games 404, and path traversal refused.
 
-## Phase 7 — A better opponent ⬜
+## Phase 7 — A better opponent ✅
 
-The interface is done and the rules are confirmed working, so the opponent can now be improved
+The interface is done and the rules are confirmed working, so the opponent was improved
 **without touching the interface** — an agent is only a `(observation, info) -> index` callable,
 and `interfaces/web/api.py` picks it from a dict.
 
-Today's `GreedyAgent` orders action types sensibly and then chooses a position **at random**. It
-beats `RandomAgent` about 70% of the time, which says more about random than about greedy. There
-is no positional judgement in the project yet.
+`GreedyAgent` ordered action types sensibly and then chose a position **at random**, which is
+why a person beat it 16–3 on the first try. `HeuristicAgent` supplies the missing half.
 
-- [ ] **Position evaluation.** Score a vertex by the production it actually buys: Σ pip odds of
-      its tiles, weighted for resource diversity (five resources beat three good ones), plus port
-      access, minus proximity to the opponent. The encoder already computes pip potential per
-      vertex — reuse it rather than writing a second version.
-- [ ] **Opening placement.** The two setup settlements decide most 1v1 games. Evaluate every legal
-      vertex, and pick the road that opens the best *next* spot rather than a random neighbour.
-- [ ] **Build policy.** City where production is best, settlement toward the best open spot, road
-      only when it reaches somewhere or takes Longest Road. Buy development cards when ore/wheat
-      rich. Bank-trade only to complete a specific build this turn.
-- [ ] **Robber policy.** Block the tile that costs the leader most, and rob whoever holds most —
-      remembering that Friendly Robber protects anyone at or below 2 public points, so early
-      blocking is often not available at all.
-- [ ] **Card policy.** Monopoly on what opponents hold most of; Year of Plenty to complete a build
-      this turn; Knights toward Largest Army when it is close; discard whatever is not in the plan.
-- [ ] **Difficulty levels.** One knob: noise added to the evaluation, so *easy* misjudges spots and
-      *hard* does not. Cheaper and more honest than crippling the rules. Exposed in the web app's
-      opponent dropdown, which already reads `api.OPPONENTS`.
-- [ ] **Measure it.** `play_match` against random and greedy, seats swapped, with the win rate
-      recorded in the docs.
+- [x] **Position evaluation.** `catan/heuristics.py` — pure functions over a `PublicView`. Value
+      is **marginal**: a tile is discounted by how much of that resource you already produce, so
+      a spot covering three resources you lack beats a richer one covering a fourth wheat. The
+      encoder's pip-potential feature was *not* reused — it is absolute production, and marginal
+      is the whole point.
+- [x] **Opening placement.** Every legal vertex evaluated; the setup road points at the best spot
+      it opens rather than a random neighbour. `test_the_opening_is_not_random` pins it.
+- [x] **Build policy.** A handler chain — city, settlement, dev-card play, road, buy, trade —
+      each choosing *where* by evaluation. Roads only when they reach somewhere: a road is worth
+      half the best spot it brings in reach, so one that leads nowhere scores zero.
+- [x] **Robber policy.** Blocks the tile costing opponents most, weighted by settlement vs city,
+      and robs whoever holds most. (Friendly Robber is enforced by the rules, so the agent only
+      ever sees legal targets.)
+- [x] **Card policy.** Monopoly on the resource the *bank* is missing — public arithmetic, no
+      peeking at hands; Year of Plenty to complete a build this turn; discard the biggest pile of
+      the cheapest thing.
+- [x] **Difficulty levels.** One knob: noise added to each evaluation. `easy` misjudges spots,
+      `hard` does not. Exposed in the web dropdown and `--agents` on the CLI.
+- [x] **It cannot cheat.** Agents see a `PublicView` with an explicit allow-list, so hidden cards
+      raise `AttributeError` rather than being available to read. A leak test replays a whole game
+      and demands the same move at every decision once the opponent's hidden cards are rewritten.
+- [x] **Measure it.** 60 games per pairing, seats swapped:
+
+      hard   vs random     98.3%        hard   vs medium    73.7%
+      hard   vs greedy     96.7%        hard   vs easy      80.0%
+      medium vs greedy     96.6%        medium vs easy      69.5%
+      easy   vs greedy     91.7%        greedy vs random    75.0%
+
+      Monotone, which is what a difficulty setting has to be to mean anything. The knob does
+      saturate: noise only degrades *position* choice, never the action-type priority, so `easy`
+      still beats greedy 91.7% of the time — `greedy` and `random` remain the rungs below it.
+
+**Found on the way:** `robber_damage` indexed the vertex→tiles table with a *tile* id, so robber
+placement was scored against unrelated positions. Both tables are keyed by integers, so nothing
+complained. See [decision 0016](docs/decisions/0016-heuristic-opponent-and-difficulty.md).
+
+## Phase 8 — Self-play ⬜
+
+`HeuristicAgent` is the baseline Phase 7 existed to create. The question a learned policy has to
+answer is no longer "can it beat random" but "can it beat 96%-against-greedy".
+
+- [ ] **PPO, not AlphaZero.** MCTS needs a simulator it can roll forward from a known position;
+      Catan has a shuffled dev deck, a shuffled dice deck and hidden hands, so a rollout would
+      need belief sampling to mean anything. PPO learns from the observation vector it actually
+      gets, which already hides what it should.
+- [ ] **Throughput is there.** Measured 3,327 steps/sec on one worker, 22,377 across 16 of 20
+      cores — 10M steps in about 7.5 minutes. This is what rules MCTS out and PPO in.
+- [ ] **Torch (CPU) as the first dependency.** The engine stays dependency-free; training does not
+      have to be.
+- [ ] **Self-play against a frozen pool** of past checkpoints, not only the current policy, so it
+      cannot win by exploiting one opponent's quirk.
+- [ ] **Measured the same way** — `play_match` against `HeuristicAgent(noise=0)`, seats swapped.
+      It drops into `api.OPPONENTS` as one more entry when it beats it.
 
 ## What this deliberately does not include
 

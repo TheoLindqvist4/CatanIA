@@ -1,7 +1,8 @@
 """Play or watch a game in the terminal.
 
-    python -m interfaces.cli                        you vs the greedy agent
-    python -m interfaces.cli --agents greedy random  watch two agents
+    python -m interfaces.cli                        you vs the strongest AI
+    python -m interfaces.cli --agents human easy     an easier opponent
+    python -m interfaces.cli --agents hard greedy    watch two agents
     python -m interfaces.cli --games 20 --quiet      benchmark, results only
     python -m interfaces.cli --render out/           also write a PNG each turn
 
@@ -22,7 +23,7 @@ import sys
 
 from catan import action_space, rules
 from catan.actions import ActionType
-from catan.agents import GreedyAgent, RandomAgent
+from catan.agents import DIFFICULTY, GreedyAgent, HeuristicAgent, RandomAgent
 from catan.dev_cards import DevCard
 from catan.env import CatanEnv
 from catan.resources import Resource
@@ -270,8 +271,11 @@ class HumanAgent:
 
 AGENTS = {
     "human": lambda seed, colour: HumanAgent(colour=colour),
-    "random": lambda seed, colour: RandomAgent(seed),
+    "hard": lambda seed, colour: HeuristicAgent(seed, noise=DIFFICULTY["hard"]),
+    "medium": lambda seed, colour: HeuristicAgent(seed, noise=DIFFICULTY["medium"]),
+    "easy": lambda seed, colour: HeuristicAgent(seed, noise=DIFFICULTY["easy"]),
     "greedy": lambda seed, colour: GreedyAgent(seed),
+    "random": lambda seed, colour: RandomAgent(seed),
 }
 
 
@@ -338,9 +342,9 @@ def main(argv=None):
         prog="python -m interfaces.cli",
         description="Play or watch a game of Catan.",
     )
-    parser.add_argument("--agents", nargs="+", default=["human", "greedy"],
+    parser.add_argument("--agents", nargs="+", default=["human", "hard"],
                         metavar="AGENT",
-                        help=f"one per seat: {', '.join(AGENTS)} (default: human greedy)")
+                        help=f"one per seat: {', '.join(AGENTS)} (default: human hard)")
     parser.add_argument("--seed", type=int, default=None, help="reproduces a whole game")
     parser.add_argument("--games", type=int, default=1, help="play this many")
     parser.add_argument("--rules", choices=["ranked1v1", "base"], default="ranked1v1")

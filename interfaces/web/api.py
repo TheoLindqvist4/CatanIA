@@ -18,7 +18,7 @@ import itertools
 
 from catan import action_space, rules
 from catan.actions import ActionType
-from catan.agents import GreedyAgent, RandomAgent
+from catan.agents import DIFFICULTY, GreedyAgent, HeuristicAgent, RandomAgent
 from catan.board import GENERIC_HARBOUR
 from catan.dev_cards import DevCard
 from catan.env import CatanEnv
@@ -32,7 +32,15 @@ from interfaces.render import Geometry
 #: The human always sits in seat 1, so the client never has to ask which side it is on.
 HUMAN = 1
 
-OPPONENTS = {"greedy": GreedyAgent, "random": RandomAgent}
+#: Selectable opponents, each a factory taking a seed. A trained policy drops in here as
+#: one more entry, without the interface changing.
+OPPONENTS = {
+    "hard": lambda seed: HeuristicAgent(seed, noise=DIFFICULTY["hard"]),
+    "medium": lambda seed: HeuristicAgent(seed, noise=DIFFICULTY["medium"]),
+    "easy": lambda seed: HeuristicAgent(seed, noise=DIFFICULTY["easy"]),
+    "greedy": GreedyAgent,
+    "random": RandomAgent,
+}
 RULESETS = {"ranked1v1": RANKED_1V1, "base": BASE_GAME}
 
 #: Board art, keyed the way the client asks for it.
@@ -61,7 +69,7 @@ class Game:
 
     _ids = itertools.count(1)
 
-    def __init__(self, opponent="greedy", rules_name="ranked1v1", seed=None):
+    def __init__(self, opponent="hard", rules_name="ranked1v1", seed=None):
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
         if rules_name not in RULESETS:
@@ -357,7 +365,7 @@ class Games:
     def __init__(self):
         self._games = {}
 
-    def new(self, opponent="greedy", rules_name="ranked1v1", seed=None):
+    def new(self, opponent="hard", rules_name="ranked1v1", seed=None):
         game = Game(opponent=opponent, rules_name=rules_name, seed=seed)
         self._games[game.id] = game
         return game
