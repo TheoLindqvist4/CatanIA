@@ -53,6 +53,8 @@ un *consommateur* du moteur, jamais une partie de celui-ci.
 - 👥 **2 à 4 joueurs.**
 - 🔁 **Déterminisme** : une partie est entièrement reproductible à partir d'une graine (`seed`).
 
+- 🖼️ **Rendu du plateau** : `interfaces/render.py` dessine une partie en PNG à partir des
+  coordonnées du moteur.
 - 🤖 **Couche IA** : espace d'actions discret de **324** indices avec masque de légalité,
   observation de **1808** flottants (perspective tournée — « moi » est toujours le joueur 0),
   masquage de l'information cachée, et un environnement `reset` / `step`. Environ **3 700
@@ -72,7 +74,25 @@ Voir [décision 0011](docs/decisions/0011-no-player-to-player-trading.md).
 > de 100 cartes inutilisables. Aujourd'hui : **40 parties sur 40** se terminent (349 tours en
 > médiane). Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
 
-## Plateau du jeu Catan
+## Une partie rendue par le moteur
+
+![Partie en cours](docs/images/board-example.png)
+
+Image produite par `interfaces/render.py` à partir d'un `GameState` : les tuiles, les
+sommets **et** les routes viennent tous du réseau de coordonnées de `catan.topology`, donc le
+rendu n'est qu'une application linéaire — aucune logique de placement séparée à maintenir.
+Illustrations reprises de
+[FullStackCatan](https://github.com/TheoLindqvist4/FullStackCatan).
+
+```python
+from catan.env import CatanEnv
+from interfaces.render import save
+
+env = CatanEnv(); env.reset(seed=12)
+save(env.state, "board.png")
+```
+
+## Schémas de référence du plateau
 
 ![Plateau de jeu](Images/Catan_board.png)
 

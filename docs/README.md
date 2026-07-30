@@ -14,6 +14,7 @@ been established: how things work, and why they were decided that way.
 | [board-geometry.md](board-geometry.md) | How the 19 tiles, 54 settlement positions and 72 road positions are numbered, the coordinate lattice, and the coastline. **Start here** to understand the board. |
 | [engine.md](engine.md) | How the engine fits together: the layers, the state model, and how to drive a game. **Start here** to use the code. |
 | [ai-surface.md](ai-surface.md) | How to train against it: the action space, the observation, the environment, and the baselines. |
+| [images/board-example.png](images/board-example.png) | A game rendered by `interfaces/render.py`. |
 | [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 
 ## Decisions
@@ -105,6 +106,10 @@ Consequences that are easy to trip over:
   ([ai-surface.md](ai-surface.md#-search-needs-to-sample-hidden-state-and-does-not-yet)).
 - **The action-space size does not depend on the player count**, so weights transfer between
   1v1 and 4-player. Robber actions naming an absent player are simply never legal.
+- **Rendering needs no layout logic of its own.** `topology` already places tiles, vertices
+  and roads on an integer lattice, so `interfaces/render.py` is one linear map to pixels.
+  The earlier FullStackCatan page stepped columns by `tileWidth * 0.87` and overlapped
+  neighbouring tiles by 13%; pointy-top hexes tile at exactly one full width.
 - **A repr must never raise.** `Action.__repr__` appears inside the `IllegalAction` message
   raised *because* an action is malformed. It crashed there twice — once on a bad action
   type, once on a bad resource index — replacing a clear error with a confusing one.

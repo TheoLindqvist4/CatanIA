@@ -15,3 +15,6 @@ __pycache__/
 
 # Windows
 Thumbs.db
+
+# Rendered boards written during development
+/board.png

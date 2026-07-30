@@ -20,9 +20,9 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **1** | Real state model + economy | ✅ **done** |
 | **2** | Complete the rules, incl. the ranked 1v1 ruleset | ✅ **done** |
 | **3** | AI surface (action space, observations, env) | ✅ **done** |
-| **4** | Interfaces (CLI, web API) | ⬜ next |
+| **4** | Interfaces (renderer, CLI, web API) | 🔶 **in progress** — renderer done |
 
-573 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+599 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -49,6 +49,8 @@ catan/
   env.py           # ✅ Gymnasium-style reset(seed) / step(index)
   agents.py        # ✅ random and greedy baselines + play_match
 interfaces/
+  render.py        # ✅ draws a GameState as a PNG, straight from the topology lattice
+  static/images/   # ✅ board art, vendored from FullStackCatan
   cli.py           #    Phase 4: the ONLY place print()/input() may appear
   api.py           #    Phase 4: adapter for the FullStackCatan front end
 tests/
@@ -280,8 +282,14 @@ adding 3–4 player training or human play.
 - [ ] Scale `tests/test_selfplay.py` up to the 10k-game harness. The invariant checks are written;
       it is currently 60 games at 1,500 actions.
 
-## Phase 4 — Interfaces ⬜
+## Phase 4 — Interfaces 🔶
 
+- [x] **`interfaces/render.py`** — draws a `GameState` as a PNG. The engine already knows where
+      everything is: `topology` places tiles, vertices *and* roads on an integer lattice, so
+      rendering is one linear map from lattice units to pixels. No separate layout logic, and
+      nothing to keep in sync with the rules.
+      Board art vendored from [FullStackCatan](https://github.com/TheoLindqvist4/FullStackCatan)
+      — 32 cropped PNGs for tiles, number tokens, settlements, cities, roads and spot markers.
 - [ ] `interfaces/cli.py` over the pure core — the only place `print`/`input` may appear.
 - [ ] **Delete the legacy engine** (`Board.py`, `Player.py`, `Deck.py`, `Dice.py`,
       `Game_2_players.py`) once the CLI replaces it as the playable entry point.

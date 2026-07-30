@@ -1,0 +1,227 @@
+"""The board renderer.
+
+Mostly geometry: the lattice-to-pixel map is the only new logic, and it is checkable
+exactly. If tiles tessellate and pieces land on their vertices, the picture is right.
+"""
+
+import math
+
+import pytest
+
+import catan.topology as T
+from catan.board import GENERIC_HARBOUR
+from catan.resources import Resource
+from catan.state import Piece
+from helpers import fresh, play_random_game, put_building, put_road
+
+render_module = pytest.importorskip("interfaces.render")
+Geometry = render_module.Geometry
+render = render_module.render
+
+
+@pytest.fixture(scope="module")
+def geometry():
+    return Geometry(hex_width=120)
+
+
+# =========================================================================== #
+# GEOMETRY                                                                    #
+# =========================================================================== #
+
+def test_a_pointy_top_hex_has_the_expected_proportions(geometry):
+    assert geometry.hex_width / geometry.hex_height == pytest.approx(math.sqrt(3) / 2)
+    assert geometry.edge == pytest.approx(geometry.hex_height / 2)
+
+
+def test_tiles_in_a_row_sit_exactly_one_width_apart(geometry):
+    """The earlier web page stepped by width * 0.87, overlapping neighbours by 13%."""
+    for row, length in enumerate(T.ROW_LENGTHS):
+        centres = [geometry.tile(T.tile_index(row, col)) for col in range(length)]
+        for left, right in zip(centres, centres[1:]):
+            assert right[0] - left[0] == pytest.approx(geometry.hex_width)
+            assert right[1] == pytest.approx(left[1]), "a row must be level"
+
+
+def test_rows_are_three_quarters_of_a_height_apart(geometry):
+    firsts = [geometry.tile(T.tile_index(row, 0))
+              for row in range(len(T.ROW_LENGTHS))]
+    for upper, lower in zip(firsts, firsts[1:]):
+        assert lower[1] - upper[1] == pytest.approx(geometry.hex_height * 0.75)
+
+
+def test_neighbouring_rows_interlock_by_half_a_width(geometry):
+    top = geometry.tile(T.tile_index(0, 0))
+    below = geometry.tile(T.tile_index(1, 0))
+    assert top[0] - below[0] == pytest.approx(geometry.hex_width / 2)
+
+
+def test_every_road_is_exactly_one_hex_edge_long(geometry):
+    """A road spans two adjacent vertices, which are one side apart. If this holds for all
+    72, the lattice-to-pixel map is linear and correct."""
+    for road in range(1, T.NUM_ROADS + 1):
+        first, second = (geometry.vertex(v) for v in T.ROAD_VERTICES[road])
+        length = math.hypot(second[0] - first[0], second[1] - first[1])
+        assert length == pytest.approx(geometry.edge, rel=1e-9)
+
+
+def test_a_tile_corner_is_one_circumradius_from_its_centre(geometry):
+    for tile in range(1, T.NUM_TILES + 1):
+        centre = geometry.tile(tile)
+        for vertex in T.TILE_VERTICES[tile]:
+            corner = geometry.vertex(vertex)
+            distance = math.hypot(corner[0] - centre[0], corner[1] - centre[1])
+            assert distance == pytest.approx(geometry.hex_height / 2, rel=1e-9)
+
+
+def test_a_road_midpoint_lies_between_its_endpoints(geometry):
+    for road in range(1, T.NUM_ROADS + 1):
+        centre, _ = geometry.road(road)
+        first, second = (geometry.vertex(v) for v in T.ROAD_VERTICES[road])
+        assert centre[0] == pytest.approx((first[0] + second[0]) / 2)
+        assert centre[1] == pytest.approx((second[1] + first[1]) / 2)
+
+
+def test_a_vertical_road_needs_no_rotation(geometry):
+    """The road assets are drawn vertically, so the angle is measured from vertical."""
+    vertical = next(
+        road for road in range(1, T.NUM_ROADS + 1)
+        if T.VERTEX_XY[T.ROAD_VERTICES[road][0]][0]
+        == T.VERTEX_XY[T.ROAD_VERTICES[road][1]][0]
+    )
+    _, angle = geometry.road(vertical)
+    assert angle % 180 == pytest.approx(0)
+
+
+def test_everything_lands_inside_the_canvas(geometry):
+    for tile in range(1, T.NUM_TILES + 1):
+        x, y = geometry.tile(tile)
+        assert 0 < x < geometry.width and 0 < y < geometry.height
+    for vertex in range(1, T.NUM_VERTICES + 1):
+        x, y = geometry.vertex(vertex)
+        assert 0 < x < geometry.width and 0 < y < geometry.height
+
+
+def test_the_canvas_scales_with_the_hex_width():
+    small, large = Geometry(hex_width=60), Geometry(hex_width=120)
+    assert large.width > small.width
+    assert large.height > small.height
+
+
+# =========================================================================== #
+# ASSETS                                                                      #
+# =========================================================================== #
+
+def test_every_asset_the_renderer_can_ask_for_exists():
+    """A missing PNG would only surface when that resource happened to be drawn."""
+    images = render_module.IMAGES
+    assert images.is_dir(), f"asset directory missing: {images}"
+
+    for filename in render_module.TILE_FILES.values():
+        assert (images / "tiles" / filename).exists(), filename
+    for number in list(range(2, 7)) + list(range(8, 13)):
+        assert (images / "numbers" / f"{number}.png").exists(), number
+    for colour in render_module.PLAYER_COLOURS:
+        assert (images / "settlements" / f"{colour}.png").exists(), colour
+        assert (images / "cities" / f"{colour}_city.png").exists(), colour
+        assert (images / "roads" / f"{colour}_road.png").exists(), colour
+    assert (images / "spots" / "circle.png").exists()
+
+
+def test_there_is_a_colour_for_every_player():
+    from catan.state import MAX_PLAYERS
+    assert len(render_module.PLAYER_COLOURS) >= MAX_PLAYERS
+
+
+def test_every_resource_and_the_desert_map_to_a_tile_image():
+    assert set(render_module.TILE_FILES) == set(Resource) | {None}
+
+
+def test_every_harbour_kind_has_a_label():
+    assert set(render_module.HARBOUR_LABELS) == set(Resource) | {GENERIC_HARBOUR}
+
+
+# =========================================================================== #
+# RENDERING                                                                   #
+# =========================================================================== #
+
+def test_rendering_produces_an_image_of_the_declared_size():
+    state = fresh(seed=1)
+    image = render(state, hex_width=80)
+    expected = Geometry(hex_width=80)
+    assert image.size == (expected.width, expected.height)
+    assert image.mode == "RGBA"
+
+
+def test_rendering_is_deterministic():
+    state = fresh(seed=1)
+    assert render(state, hex_width=60).tobytes() == render(state, hex_width=60).tobytes()
+
+
+def test_rendering_does_not_mutate_the_state():
+    state = fresh(seed=1)
+    before = state.clone()
+    render(state, hex_width=60)
+    assert state == before
+
+
+def test_an_empty_board_and_a_played_one_look_different():
+    empty = fresh(seed=1)
+    played = play_random_game(seed=1, max_actions=400)
+    assert render(empty, hex_width=60).tobytes() != render(played, hex_width=60).tobytes()
+
+
+def test_pieces_change_the_picture():
+    state = fresh(seed=1)
+    before = render(state, hex_width=60).tobytes()
+
+    put_building(state, 1, 20, Piece.SETTLEMENT)
+    with_settlement = render(state, hex_width=60).tobytes()
+    assert with_settlement != before
+
+    state.vertex_piece[20] = Piece.CITY
+    assert render(state, hex_width=60).tobytes() != with_settlement
+
+    put_road(state, 1, T.VERTEX_ROADS[20][0])
+    assert render(state, hex_width=60).tobytes() != with_settlement
+
+
+def test_moving_the_robber_changes_the_picture():
+    state = fresh(seed=1)
+    before = render(state, hex_width=60).tobytes()
+    state.robber_tile = next(t for t in range(1, T.NUM_TILES + 1)
+                             if t != state.robber_tile)
+    assert render(state, hex_width=60).tobytes() != before
+
+
+def test_available_spots_can_be_shown_for_a_player():
+    state = fresh(seed=1)
+    plain = render(state, hex_width=60).tobytes()
+    marked = render(state, hex_width=60, show_spots_for=1).tobytes()
+    assert marked != plain, "setup should offer spots to mark"
+
+
+def test_rendering_works_at_every_stage_of_a_game():
+    sizes = set()
+
+    def check(state):
+        image = render(state, hex_width=50)
+        sizes.add(image.size)
+
+    play_random_game(seed=2, max_actions=120, on_step=check)
+    assert len(sizes) == 1, "the canvas size must not wander"
+
+
+@pytest.mark.parametrize("num_players", [2, 3, 4])
+def test_rendering_handles_every_player_count(num_players):
+    state = play_random_game(seed=1, num_players=num_players, max_actions=300)
+    assert render(state, hex_width=50).size == Geometry(hex_width=50).size
+
+
+def test_save_writes_a_png(tmp_path):
+    state = fresh(seed=1)
+    target = tmp_path / "board.png"
+    assert render_module.save(state, target, hex_width=50) == target
+    assert target.exists() and target.stat().st_size > 0
+
+    from PIL import Image
+    assert Image.open(target).size == Geometry(hex_width=50).size
