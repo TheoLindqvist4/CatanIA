@@ -4,8 +4,9 @@ Reference material for CatanIA. The goal of the project is a rules-correct Catan
 whose entire state is machine-readable, so an agent can be trained on it; the playable
 interface consumes that engine rather than being part of it.
 
-For *what happens next*, see [`../ROADMAP.md`](../ROADMAP.md). This folder is for what has
-been established: how things work, and why they were decided that way.
+For *what happens next*, see [`../ROADMAP.md`](../ROADMAP.md) — phases 0–4 built the engine and
+its AI surface; phases 5–7 turn it into a game you play against the AI in a browser. This folder
+is for what has been established: how things work, and why they were decided that way.
 
 ## Contents
 
