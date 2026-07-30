@@ -193,3 +193,34 @@ def snapshot_board(board):
         dict(board.harbours),
         {v: board.harbours_at(v) for v in range(1, 55)},
     )
+
+
+def scramble_hidden_state(state, me):
+    """Rewrite everything ``me`` may not see, leaving every public count untouched.
+
+    Opponent hands keep their size but become all one resource; their development cards keep
+    their count but become all knights; both decks are reversed. Any agent whose decision
+    changes was reading something it had no right to.
+
+    Used by the leak tests for :class:`~catan.agents.HeuristicAgent` and
+    :class:`~training.agent.LookaheadAgent`. Shared rather than duplicated because the two
+    must scramble *identically* — a weaker scramble in one would quietly weaken that
+    guarantee.
+    """
+    from catan.dev_cards import DevCard
+    from catan.resources import NUM_RESOURCES, Resource, total
+
+    for player in state.players:
+        if player == me:
+            continue
+        held = total(state.hands[player])
+        state.hands[player] = [0] * NUM_RESOURCES
+        state.hands[player][Resource.ORE] = held
+
+        cards = sum(state.dev_cards[player])
+        state.dev_cards[player] = [0] * len(DevCard)
+        state.dev_cards[player][DevCard.KNIGHT] = cards
+
+    state.dev_deck = list(reversed(state.dev_deck))
+    state.dice_deck = list(reversed(state.dice_deck))
+    return state

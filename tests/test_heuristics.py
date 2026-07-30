@@ -23,6 +23,7 @@ from catan.topology import (
     VERTEX_TILES,
 )
 from catan.view import PublicView
+from tests.helpers import scramble_hidden_state
 
 
 @pytest.fixture
@@ -282,29 +283,6 @@ def test_the_opening_is_not_random():
 # =========================================================================== #
 # THE LEAK TEST                                                               #
 # =========================================================================== #
-
-def scramble_hidden_state(state, me):
-    """Rewrite everything ``me`` may not see, leaving every public count untouched.
-
-    Opponent hands keep their size but become all one resource; their development cards
-    keep their count but become all knights; the deck is reversed. Any agent whose move
-    changes was reading something it had no right to.
-    """
-    for player in state.players:
-        if player == me:
-            continue
-        held = total(state.hands[player])
-        state.hands[player] = [0] * NUM_RESOURCES
-        state.hands[player][Resource.ORE] = held
-
-        cards = sum(state.dev_cards[player])
-        state.dev_cards[player] = [0] * len(DevCard)
-        state.dev_cards[player][DevCard.KNIGHT] = cards
-
-    state.dev_deck = list(reversed(state.dev_deck))
-    state.dice_deck = list(reversed(state.dice_deck))
-    return state
-
 
 def test_the_agent_cannot_see_the_opponent_s_cards():
     """Play a game; at every decision, ask again with the hidden cards rewritten.

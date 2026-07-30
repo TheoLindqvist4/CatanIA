@@ -18,6 +18,8 @@ from catan import action_space, encoder                                  # noqa:
 from catan.agents import HeuristicAgent, RandomAgent                     # noqa: E402
 from catan.env import CatanEnv                                           # noqa: E402
 from catan.rulesets import RANKED_1V1                                    # noqa: E402
+from catan.view import PublicView                                        # noqa: E402
+from tests.helpers import scramble_hidden_state                          # noqa: E402
 from training.agent import PolicyAgent                                   # noqa: E402
 from training.evaluate import confidence_interval                        # noqa: E402
 from training.net import MASK_FILL, PolicyValueNet                       # noqa: E402
@@ -364,3 +366,85 @@ def test_the_collector_never_queries_the_network_on_a_dead_game(net):
         for info in collector.info:
             assert not info["done"], "a finished game was left in the pool"
             assert sum(info["mask"]) > 0, "a dead position would reach the policy head"
+
+
+# =========================================================================== #
+# LOOKAHEAD — searching without seeing what it must not                       #
+# =========================================================================== #
+
+def test_lookahead_only_searches_actions_with_public_effects():
+    """The allow-list is a leak boundary, not an optimisation.
+
+    `clone()` copies the dev deck, the dice deck and opponents' hands verbatim, so applying
+    a dev-card buy to a clone draws the *real* next card and applying a robber move performs
+    the *real* steal. Searching over either would let the agent see what a player may not.
+    """
+    from catan.actions import ActionType
+    from training.agent import DETERMINISTIC_TYPES
+
+    forbidden = {
+        ActionType.END_TURN,          # rolls the next die from the hidden balanced deck
+        ActionType.BUY_DEV_CARD,      # draws the next card from the hidden deck
+        ActionType.MOVE_ROBBER,       # the steal reveals a card from the victim's hand
+        ActionType.PLAY_KNIGHT,       # likewise
+        ActionType.PLAY_MONOPOLY,     # reads what opponents actually hold
+    }
+    assert not (DETERMINISTIC_TYPES & forbidden), sorted(
+        t.name for t in DETERMINISTIC_TYPES & forbidden
+    )
+
+
+def test_lookahead_cannot_see_the_opponents_cards(net):
+    """Same contract as the heuristic's leak test: rewrite everything hidden, at constant
+    public counts, and demand the identical move at every decision."""
+    from training.agent import LookaheadAgent
+
+    env = CatanEnv(num_players=2)
+    observation, info = env.reset(seed=21)
+    checked = 0
+
+    for _ in range(300):
+        if info["done"]:
+            break
+        honest = LookaheadAgent(net, weight=1.0)(observation, info)
+
+        scrambled = scramble_hidden_state(env.state.clone(), info["player"])
+        assert action_space.legal_indices(scrambled) == info["legal"]
+        cheat_info = dict(info, view=PublicView(scrambled, info["player"]))
+        cheating = LookaheadAgent(net, weight=1.0)(observation, cheat_info)
+
+        assert honest == cheating, (
+            f"turn {info['turn']}, {info['phase']}: the move changed once the opponent's "
+            f"hidden cards were rewritten — the search is reading them"
+        )
+        checked += 1
+        observation, _, _, _, info = env.step(honest)
+
+    assert checked > 80, checked
+
+
+def test_lookahead_with_zero_weight_is_the_plain_policy(net):
+    from training.agent import LookaheadAgent
+
+    env = CatanEnv(num_players=2)
+    observation, info = env.reset(seed=6)
+    for _ in range(60):
+        if info["done"]:
+            break
+        assert (LookaheadAgent(net, weight=0.0)(observation, info)
+                == PolicyAgent(net)(observation, info))
+        observation, _, _, _, info = env.step(info["legal"][-1])
+
+
+def test_lookahead_returns_legal_actions(net):
+    from training.agent import LookaheadAgent
+
+    env = CatanEnv(num_players=2)
+    observation, info = env.reset(seed=8)
+    agent = LookaheadAgent(net, weight=2.0)
+    for _ in range(250):
+        if info["done"]:
+            break
+        action = agent(observation, info)
+        assert action in info["legal"]
+        observation, _, _, _, info = env.step(action)
