@@ -329,13 +329,25 @@ def test_geometry_is_json_serialisable():
 # =========================================================================== #
 
 @pytest.fixture(scope="module")
-def server():
+def server(tmp_path_factory):
+    # A game reached over HTTP is recorded, because that is how a person plays. The test
+    # suite reaches it over HTTP too, so its games are sent somewhere disposable — the
+    # point of recording is the handful of real games, and burying them under the suite's
+    # would defeat it.
+    from interfaces.web import recorder
+
+    original = recorder.GAMES
+    recorder.GAMES = tmp_path_factory.mktemp("recorded")
+
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}"
-    httpd.shutdown()
-    httpd.server_close()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        recorder.GAMES = original
 
 
 def request(base, path, payload=None):

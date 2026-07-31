@@ -122,7 +122,7 @@ class Game:
     _ids = itertools.count(1)
 
     def __init__(self, opponent=None, rules_name="ranked1v1", seed=None,
-                 record_game=True):
+                 record_game=False):
         opponent = DEFAULT_OPPONENT if opponent is None else opponent
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
@@ -146,6 +146,11 @@ class Game:
             "rules": rules_name,
             "seed": self.seed,
         }, human=HUMAN) if record_game else None
+        # Off by default on purpose. A game is worth recording because a *person* played
+        # it, and this class is also driven by tests, benchmarks and scripts — which would
+        # otherwise bury the handful of real games under hundreds of synthetic ones.
+        # :mod:`interfaces.web.server` is the only caller that knows a human is involved,
+        # so it is the one that turns this on.
 
         self._record(self.info)
         self._let_opponent_play()
@@ -481,8 +486,9 @@ class Games:
     def __init__(self):
         self._games = {}
 
-    def new(self, opponent=None, rules_name="ranked1v1", seed=None):
-        game = Game(opponent=opponent, rules_name=rules_name, seed=seed)
+    def new(self, opponent=None, rules_name="ranked1v1", seed=None, record_game=False):
+        game = Game(opponent=opponent, rules_name=rules_name, seed=seed,
+                    record_game=record_game)
         self._games[game.id] = game
         return game
 

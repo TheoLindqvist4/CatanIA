@@ -1,306 +1,252 @@
-﻿# 🏝️ CatanIA - Jeu en ligne inspiré de Catan 🎲
+# CatanIA
 
-## 📜 Description du projet
+A Catan engine built so that a machine can learn to play it, and a person can play against
+what it learned.
 
-CatanIA est une réimplémentation du jeu de société **Catan** en Python 🐍. L'objectif principal
-n'est pas seulement de pouvoir y jouer : c'est d'exposer **l'intégralité de l'état de la partie**
-sous une forme lisible par une machine, afin d'**entraîner une IA** à jouer. L'interface de jeu est
-un *consommateur* du moteur, jamais une partie de celui-ci.
+The engine is the point. It is dependency-free Python, exhaustively tested, and every rule
+lives in exactly one place — so an agent and a human are always playing the same game, and
+"the interface disagreed with the rules" is not a bug this project can have.
 
-> ✅ **Le moteur est complet.** `catan/` implémente **toutes les règles du Catan de base**, à la
-> seule exception de l'échange entre joueurs (volontairement hors périmètre pour cette version).
-> Reste à construire la couche destinée à l'IA : espace d'actions, encodage des observations et
-> environnement d'entraînement (phase 3).
->
-> - **[ROADMAP.md](ROADMAP.md)** — les phases, ce qui est fait et ce qui reste.
-> - **[docs/engine.md](docs/engine.md)** — comment le moteur s'articule et comment piloter une
->   partie.
-> - **[docs/ai-surface.md](docs/ai-surface.md)** — comment entraîner une IA dessus : espace
->   d'actions, encodage des observations, environnement et agents de référence.
-> - **[docs/](docs/README.md)** — l'audit initial, la référence de la géométrie, et les décisions
->   clés (avec leurs justifications et les écarts assumés par rapport aux règles officielles).
-
-## ⭐ État actuel
-
-**Fonctionne** (598 tests) :
-
-- 🗺️ **Géométrie du plateau** : 19 tuiles, 54 emplacements de colonies, 72 emplacements de routes,
-  toutes les relations d'adjacence — **générées** et vérifiées contre les schémas de `Images/`.
-- 🎲 **Génération du plateau** : distribution standard des jetons et des ressources, avec une règle
-  d'équilibrage (pas de nombres identiques adjacents, ni 6/8 ni 2/12).
-- 🧭 **Modèle d'état complet** : propriétaire et type de chaque sommet, propriétaire de chaque
-  route, mains, réserves de pièces, phase et tour. Copie (`clone`) économique pour la recherche.
-- ⚖️ **Une seule autorité de légalité** : `legal_actions` et `apply` partagent les mêmes
-  prédicats — un coup ne peut pas être proposé par l'un et refusé par l'autre.
-- 🏠 **Construction** : routes, colonies et **villes**, avec le coût réellement débité, la règle de
-  distance, la connectivité, et le blocage par une construction adverse.
-- 🎲 **Production** selon les dés, doublée pour les villes.
-- 🏦 **La banque** : 19 cartes par ressource, conservation des cartes (toujours 95 au total) et la
-  règle officielle de pénurie.
-- 🔄 **Échange avec la banque** à 4:1, et **les ports** à 3:1 et 2:1. Ports placés aléatoirement
-  mais régulièrement espacés ; les deux extrémités d'un port en donnent le bénéfice, mais la règle
-  de distance fait qu'un seul joueur peut en profiter.
-- 🦹 **Le voleur** : gestion du 7, défausse de la moitié de la main au-delà de 7 cartes, blocage de
-  la production de sa tuile, et vol d'une carte au hasard.
-- 🃏 **Cartes de développement** : pioche de 25 cartes, achat, et les deux règles de timing
-  (une carte par tour, et pas celle achetée dans le tour). Chevalier, Construction de routes,
-  Année d'abondance, Monopole, et Point de victoire — cette dernière n'est jamais jouée : elle
-  compte tant qu'elle est en main et reste cachée.
-- 🎖️ **Armée la plus puissante** (3 chevaliers) et **route la plus longue** (5 segments),
-  2 points chacune, conservées jusqu'à être strictement dépassées.
-- 🏆 **Points de victoire et victoire à 10.**
-- 🛤️ **Plus longue route** : chemin simple strict, interrompu par une construction adverse.
-- 👥 **2 à 4 joueurs.**
-- 🔁 **Déterminisme** : une partie est entièrement reproductible à partir d'une graine (`seed`).
-
-- 🖼️ **Rendu du plateau** : `interfaces/render.py` dessine une partie en PNG à partir des
-  coordonnées du moteur.
-- 🤖 **Couche IA** : espace d'actions discret de **324** indices avec masque de légalité,
-  observation de **1808** flottants (perspective tournée — « moi » est toujours le joueur 0),
-  masquage de l'information cachée, et un environnement `reset` / `step`. Environ **3 700
-  pas/seconde**. Agents de référence : aléatoire et glouton.
-
-**Pas encore implémenté :** l'échantillonnage de l'information cachée (prérequis pour un MCTS),
-l'interface en ligne de commande et l'API web — phase 4. Détails dans [ROADMAP.md](ROADMAP.md).
-
-**Volontairement hors périmètre :** l'échange entre joueurs. La cible est le 1 contre 1, où céder
-des ressources profite au seul adversaire capable de vous battre — et une offre libre est un
-échange « ensemble contre ensemble » qui ne se ramène pas à un espace d'actions discret.
-Voir [décision 0011](docs/decisions/0011-no-player-to-player-trading.md).
-
-> 📈 **L'échange a rendu les parties jouables.** Avant lui, seules **4 parties sur 40** atteignaient
-> 10 points : une colonie coûte quatre ressources différentes, or les colonies d'un joueur n'en
-> atteignent souvent que trois, et sans conversion possible les joueurs restaient bloqués avec plus
-> de 100 cartes inutilisables. Aujourd'hui : **40 parties sur 40** se terminent (349 tours en
-> médiane). Détails : [docs/engine.md](docs/engine.md#trading-is-what-made-games-finishable).
-
-## Une partie rendue par le moteur
-
-![Partie en cours](docs/images/board-example.png)
-
-Image produite par `interfaces/render.py` à partir d'un `GameState` : les tuiles, les
-sommets **et** les routes viennent tous du réseau de coordonnées de `catan.topology`, donc le
-rendu n'est qu'une application linéaire — aucune logique de placement séparée à maintenir.
-Illustrations reprises de
-[FullStackCatan](https://github.com/TheoLindqvist4/FullStackCatan).
-
-```python
-from catan.env import CatanEnv
-from interfaces.render import save
-
-env = CatanEnv(); env.reset(seed=12)
-save(env.state, "board.png")
+```sh
+python -m interfaces.web        # then open http://127.0.0.1:8000
 ```
 
-## Schémas de référence du plateau
+![Board](Images/Catan_tile_positions.png)
 
-![Plateau de jeu](Images/Catan_board.png)
+---
 
-## Positions des routes
+## What is here
 
-![Positions des routes](Images/Catan_road_positions.png)
+| | |
+|---|---|
+| **A complete Catan implementation** | Ranked 1v1 rules by default: 15 points, hand limit 9, Friendly Robber, Balanced Dice |
+| **A playable web interface** | Click the board to build. Painted artwork, resources as cards, full game log |
+| **A hand-written opponent** | Positional judgement from marginal value — beats a naive greedy agent 96.7% |
+| **A trained opponent** | PPO self-play, warm-started by cloning the heuristic |
+| **The machinery to improve it** | 1,868-float observation, 325 discrete actions, parallel rollouts, a promotion gate |
+| **753 tests** | Including leak detectors that prove no agent can see hidden information |
 
-## Positions des colonies
+## Quick start
 
-![Positions des colonies](Images/Catan_settlement_positions.png)
+```sh
+git clone https://github.com/TheoLindqvist4/CatanIA.git
+cd CatanIA
+python -m interfaces.web                       # play in the browser
 
-## 🛠️ Technologies utilisées
-
-- 🐍 **Python** : Langage principal du backend
-
-## 🚀 Installation et exécution
-
-1. 📥 **Cloner le projet** :
-   ```sh
-   git clone https://github.com/votre-utilisateur/CatanIA.git
-   cd CatanIA
-   ```
-2. 📦 **Installer les dépendances** :
-   ```sh
-   pip install -r requirements.txt
-   ```
-3. 🎮 **Jouer dans le navigateur** (recommandé) :
-   ```sh
-   python -m interfaces.web
-   ```
-   Puis ouvrir <http://127.0.0.1:8000>. On clique directement sur le plateau pour poser une
-   colonie, une route ou une ville ; les emplacements légaux clignotent. Les pièces sont les
-   illustrations peintes du jeu — colonies, villes et routes — et les ressources sont
-   montrées en cartes plutôt qu'en mots, y compris dans la banque et sur les boutons
-   d'échange. La main de l'adversaire est cachée : on n'en voit que le dos des cartes.
-   Le dé, les mains, la banque, le voleur et le journal sont affichés en permanence.
-   L'adversaire se choisit dans le menu déroulant — `hard` par défaut. Aucune dépendance :
-   uniquement la bibliothèque standard.
-
-4. ⌨️ **Ou jouer dans le terminal** :
-   ```sh
-   python -m interfaces.cli                          # vous contre l'IA la plus forte
-   python -m interfaces.cli --agents human easy      # un adversaire plus accessible
-   python -m interfaces.cli --agents hard greedy     # observer deux agents
-   python -m interfaces.cli --games 20 --quiet       # comparer, résultats seuls
-   python -m interfaces.cli --render out/            # écrire un PNG par action
-   ```
-
-5. 🤖 **Ou piloter le moteur depuis du code** :
-   ```python
-   from catan.env import CatanEnv
-
-   env = CatanEnv(num_players=2)          # règles du 1 contre 1 classé
-   obs, info = env.reset(seed=0)
-
-   while not info["done"]:
-       action = mon_agent(obs, info["mask"])          # un indice, doit être légal
-       obs, reward, terminated, truncated, info = env.step(action)
-
-   print(info["winner"], info["scores"])
-   ```
-
-   Voir [docs/engine.md](docs/engine.md) et [docs/ai-surface.md](docs/ai-surface.md).
-
-## 📂 Structure du projet
-
-```
-CatanIA/
-│-- 📦 catan/                 # Le moteur
-│   │-- 📐 topology.py        #   Géométrie du plateau (générée, gelée à l'import)
-│   │-- 🌾 resources.py       #   Les cinq ressources et les coûts
-│   │-- 🗺️ board.py           #   Une disposition de plateau — IMMUABLE
-│   │-- 🧭 state.py           #   GameState : tout ce qui change pendant la partie
-│   │-- 🎯 actions.py         #   Action = (type, position, extra)
-│   │-- ⚖️ rules.py           #   legal_actions / apply — l'unique autorité de légalité
-│   │-- 🎲 dice.py            #   dés simples, ou le paquet de 36 « dés équilibrés »
-│   │-- 📜 rulesets.py        #   jeu de base ou 1 contre 1 classé (par défaut)
-│   │-- 🃏 dev_cards.py       #   la pioche de 25 cartes
-│   │-- 🎯 action_space.py    #   324 indices + masque de légalité
-│   │-- 👁️ encoder.py         #   l'observation destinée au réseau
-│   │-- 🕹️ env.py             #   environnement reset / step
-│   │-- 👓 view.py            #   ce qu'un joueur a le droit de voir (liste blanche)
-│   │-- 🧠 heuristics.py      #   évaluation des positions (valeur marginale)
-│   │-- 🤖 agents.py          #   agents de référence et arène de matchs
-│-- 🧠 training/              # Auto-apprentissage (seul endroit qui importe PyTorch)
-│   │-- net.py               #   réseau politique/valeur, masquage inclus
-│   │-- rollout.py           #   collecte par siège, GAE, récompense terminale
-│   │-- ppo.py               #   la mise à jour et ses diagnostics
-│   │-- pool.py              #   adversaires gelés + ancre heuristique
-│   │-- clone.py             #   démarrage à chaud par imitation
-│   │-- evaluate.py          #   taux de victoire et intervalles de confiance
-│   │-- agent.py             #   PolicyAgent — se branche comme tout autre agent
-│   │-- train.py             #   la boucle
-│-- 🖥️ interfaces/            # Les seules parties qui affichent quelque chose
-│   │-- 🖼️ render.py          #   rendu du plateau en PNG
-│   │-- ⌨️ cli.py             #   jouer ou observer une partie en terminal
-│   │-- 🌐 web/               #   le jeu jouable dans le navigateur
-│   │   │-- api.py            #     la partie sous forme de dictionnaires (testable)
-│   │   │-- server.py         #     serveur HTTP minimal (bibliothèque standard)
-│   │   │-- static/           #     plateau SVG, clic pour jouer
-│-- 🧪 tests/                 # Suite de tests (pytest)
-│-- 📚 docs/                  # Audit, géométrie, moteur, décisions clés
-│-- 🛣️ ROADMAP.md             # État du projet et phases
-│-- 📄 README.md              # Documentation du projet
-│
+python -m interfaces.cli                       # or in the terminal
+python -m interfaces.cli --agents hard easy    # or watch two bots
 ```
 
-`catan/topology.py` ne contient **aucune** table écrite à la main. Toute la géométrie est
-**générée** à partir d'une seule ligne :
+The engine needs **no dependencies at all**. Only training needs PyTorch:
+
+```sh
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+---
+
+## The three ideas this project is built on
+
+### 1. One source of truth, always
+
+The rules live in `catan/rules.py` and nowhere else. `legal_actions` and `apply` share the
+same `can_*` predicates, so an action is legal for exactly one reason. The browser draws what
+the server sends and reports clicks; it holds no rules, no board generation, no scoring. The
+last time board logic existed in JavaScript it was a second implementation that could
+disagree with the engine.
+
+The same principle removed 440 lines of hand-written geometry. `catan/topology.py` generates
+every vertex, road and adjacency from one line:
 
 ```python
 ROW_LENGTHS = (3, 4, 5, 4, 3)
 ```
 
-Les centres des hexagones sont placés sur un réseau d'entiers, les sommets partagés sont fusionnés
-par égalité exacte, puis les identifiants sont attribués par position : les sommets triés par
-`(y, x)`, les routes par `(y minimal, x₁+x₂)`. Les identifiants obtenus sont **identiques** à ceux
-dessinés dans `Images/` — les tests le vérifient, donc les schémas et le code ne peuvent pas
-diverger.
+The generated ids are **identical** to the ones drawn in `Images/`, which the tests check — so
+the diagrams and the code cannot drift apart. Two entries in the old hand-written road table
+were wrong, which had been silently corrupting the Longest Road calculation.
 
-Cela supprime environ 440 lignes de données maintenues à la main, rend impossible toute
-désynchronisation entre les relations (deux entrées de l'ancienne table route→routes étaient
-incorrectes, ce qui faussait silencieusement le calcul de la plus longue route), et accélère les
-recherches d'un facteur 145. Détails et schémas : **[docs/board-geometry.md](docs/board-geometry.md)**.
+### 2. Hidden information is hidden by construction, not by care
 
-## 🤖 L'adversaire
+An agent receives a `PublicView` with an explicit allow-list. Reading an opponent's hand
+raises `AttributeError`. A new field on `GameState` is invisible to agents until someone adds
+it deliberately — the opposite of a deny-list, where forgetting once leaks forever.
 
-`HeuristicAgent` choisit **où**, pas seulement **quoi** — c'est toute la différence avec l'agent
-glouton, qui ordonnait bien ses constructions puis plaçait au hasard. L'idée centrale est la
-**valeur marginale** : une colonie ne vaut pas la somme de ses tuiles, elle vaut ce que ces tuiles
-ajoutent à ce que l'on produit déjà. Un troisième blé vaut bien moins qu'un premier minerai.
+The observation vector, the web responses and the game log are all filtered the same way, and
+each has a **leak test**: rewrite the opponent's hidden cards at constant public counts, and
+demand that nothing observable changes.
 
-Trois niveaux, réglés par un seul bouton — du **bruit** ajouté à chaque évaluation. Un adversaire
-facile *se trompe* sur la valeur des emplacements, comme un joueur humain plus faible ; on ne lui
-retire aucune règle. Sur 60 parties, sièges inversés :
+### 3. Measure it, or do not claim it
 
-| | | | |
-|---|---|---|---|
-| hard vs random | 98.3% | hard vs medium | 73.7% |
-| hard vs greedy | 96.7% | hard vs easy | 80.0% |
-| medium vs greedy | 96.6% | medium vs easy | 69.5% |
-| easy vs greedy | 91.7% | greedy vs random | 75.0% |
+Every performance claim in this repository has a number behind it, and several turned out to
+be the opposite of what seemed obvious. The records in `docs/decisions/` exist so the
+reasoning survives — including the things that did not work.
 
-**Il ne peut pas tricher.** Un agent ne reçoit pas l'état de la partie mais un
-[`PublicView`](catan/view.py) à liste blanche explicite : lire la main de l'adversaire lève une
-`AttributeError`. Un test rejoue une partie entière et exige le même coup à chaque décision une
-fois les cartes cachées de l'adversaire réécrites.
+---
 
-Détails : [décision 0016](docs/decisions/0016-heuristic-opponent-and-difficulty.md).
+## The opponents
 
-## 🧠 Entraîner un agent (Phase 8)
+| name | what it is |
+|---|---|
+| `hard` / `medium` / `easy` | The heuristic, with noise added to its evaluations. Difficulty is *misjudgement*, not amputated rules |
+| `greedy` | Sensible build order, random placement |
+| `random` | Uniform over legal moves |
+| `learned` | The trained champion, when one is installed |
 
-Le moteur reste **sans dépendance**. Seul le paquet `training/` importe PyTorch, et les deux
-interfaces fonctionnent sans lui.
+The heuristic's central idea is **marginal value**: a settlement is worth what its tiles add
+to what you already produce, not the sum of its pips. A third wheat is worth far less than a
+first ore.
 
-```sh
-pip install torch --index-url https://download.pytorch.org/whl/cpu
+Its resource weights are tuned for **two-player, 15-point** play, which inverts four-player
+folklore. Competitive 1v1 data on this exact ruleset gives the win rate for a player who
+starts with no production of a resource:
 
-python -m training.clone --games 300                 # imiter l'heuristique (~4 min)
-python -m training.train --resume checkpoints/cloned.pt --iterations 400 --lr 1e-4
-python -m training.agent checkpoints/best.pt checkpoints/policy.pt   # version jouable, 5 Mo
+```
+brick 36%    wood 40%    sheep 42%    ore 43%    wheat 49%      (50% = even)
 ```
 
-Le dernier appel écrit `checkpoints/policy.pt`, que les deux interfaces détectent
-automatiquement et proposent sous le nom `learned`.
+Missing brick is the worst thing that can happen to an opening; missing wheat is nearly free.
+With no player-to-player trading, a resource you do not produce costs 4:1 at the bank, so
+*expansion* is what gates a 15-point run.
 
-**PPO plutôt qu'AlphaZero.** Une recherche arborescente a besoin d'un état que l'on peut
-dérouler ; ici `clone()` copie la pioche de développement, le paquet de dés et les cartes de
-l'adversaire *à l'identique*, donc une simulation rejoue le même futur au lieu d'en
-échantillonner un. L'échantillonnage de croyances est un prérequis, et il n'est pas écrit.
+---
 
-**Ce qui est mesuré.** L'agent entraîné est désormais **le joueur le plus fort du projet**.
-Sur 1 000 parties, sièges inversés :
-
-| adversaire | résultat | taux | IC 95% |
-|---|---|---|---|
-| heuristique `hard` | 735 – 253 | **74.4%** | [71.6, 77.0] |
-| heuristique `medium` | 374 – 26 | 93.5% | [90.6, 95.5] |
-| `greedy` | 400 – 0 | **100.0%** | [99.0, 100.0] |
-| `random` | 400 – 0 | **100.0%** | [99.0, 100.0] |
-
-Environ 33 minutes de CPU : quatre pour cloner l'heuristique, 29 pour l'affiner. Le chemin a
-compté plus que le budget — la première tentative, avec un réseau dense, a mis 68 minutes pour
-atteindre la parité (52.1%) sans jamais la dépasser.
-
-`learned` est l'adversaire par défaut lorsque `checkpoints/policy.pt` existe ; sinon on
-retombe sur `hard`.
-
-Détails et limites : [décision 0017](docs/decisions/0017-ppo-self-play.md),
-[décision 0018](docs/decisions/0018-clone-before-self-play.md).
-
-## 🧪 Tests
+## Training
 
 ```sh
-python -m pytest tests -q
+python -m training.clone --games 300 --net structured     # imitate the heuristic, ~4 min
+python -m training.train --resume checkpoints/cloned.pt --workers 12 --lr 3e-5
+python -m training.champion promote checkpoints/best.pt   # only if measurably better
 ```
 
-## 🎯 Fonctionnement du jeu
+**PPO, not AlphaZero.** Search needs a state you can roll forward, and `clone()` copies the
+development deck, the dice deck and opponents' hands verbatim — so a rollout replays the same
+future instead of sampling one. Belief sampling is the prerequisite, and it is not built.
 
-- 🏁 **Début de la partie** : Chaque joueur place ses colonies et routes initiales.
-- 🔄 **Tours de jeu** : Chaque joueur lance les dés, reçoit des ressources et peut construire.
+**Cloning first.** Self-play from random spends millions of steps rediscovering things
+`catan/heuristics.py` states outright. Cloning reaches useful play in four minutes.
 
-## Projet lié : Full Stack Catan
+**The network knows the board has a shape.** `training/structured_net.py` shares weights
+across all 54 vertices, 72 roads and 19 tiles, and produces per-position logits from each
+position's own embedding. Against a flat MLP on the same data: held-out agreement 69.6% →
+**80.3%**, overfitting gap 13.9 → **2.2 points**, with 7.3x fewer parameters.
 
-Pour plus de détails sur la génération visuelle du plateau avec une application Full Stack utilisant une API, vous pouvez consulter le dépôt suivant :
+### The champion, and why training cannot break your game
 
-[Full Stack Catan - Génération du plateau visuellement avec l&#39;application Full Stack API](https://github.com/TheoLindqvist4/FullStackCatan)
+```
+checkpoints/   scratch. A run owns it and rewrites it. Not in git.
+models/        the champion. Changes only by promotion. In git.
+```
 
-## ✨ Auteurs
+The interfaces read `models/champion.pt` and nothing else, so a fine-tune in progress cannot
+disturb a game in progress. Promotion is earned: a candidate plays 400 games against the
+reigning champion and is refused unless the Wilson lower bound clears 50%. It is also checked
+against the fixed heuristic, so a policy that beat the champion by learning its habits while
+getting worse at the game is rejected — self-play is non-transitive and that is where it
+shows.
 
-- [Théo Lindqvist](https://github.com/TheoLindqvist4) 🖊️👨‍💻
+This is not theoretical. The gate has already refused a finished training run that scored
+48.2% against the champion.
+
+### Recorded games
+
+Games you play in the browser are written to `games/`. The record is the **seed and the move
+indices**, which is complete rather than a summary: the engine is deterministic, so replaying
+reproduces the board, the decks, every roll and every observation. Each decision also keeps
+*what else was on offer*, because "it had fourteen options and chose that one" is the question
+a lopsided game needs answered.
+
+```sh
+python -m interfaces.web.recorder --margin 5 --verify    # the lopsided ones
+```
+
+Only games a person actually played are recorded — tests and scripts drive the same code and
+leave no trace.
+
+---
+
+## Layout
+
+```
+catan/                 the engine — no dependencies
+  topology.py            geometry, generated from ROW_LENGTHS
+  board.py               one immutable layout
+  state.py               everything that changes during a game
+  rules.py               legal_actions / apply — the only legality authority
+  action_space.py        325 flat indices + a legality mask
+  encoder.py             the 1,868-float observation
+  view.py                PublicView — what a player may see
+  heuristics.py          position evaluation
+  agents.py              the baseline agents and a match harness
+  env.py                 reset / step
+
+interfaces/            the only parts that display anything
+  render.py              board -> PNG
+  cli.py                 play or watch in a terminal
+  web/                   the browser game, the recorder, a stdlib HTTP server
+
+training/              the only package that imports PyTorch
+  net.py structured_net.py    the policy/value networks
+  rollout.py ppo.py pool.py   self-play, the update, the opponent pool
+  clone.py                    warm start by imitating the heuristic
+  champion.py                 the model the game plays, and the promotion gate
+
+docs/decisions/        21 records of why things are the way they are
+```
+
+---
+
+## Things that turned out to be the opposite of obvious
+
+Each cost real time to discover, and all are written up in `docs/decisions/`.
+
+- **The opening evaluator was a pip count in disguise.** `settlement_value` never accumulated
+  within a vertex, so with an empty hand it collapsed to exactly 4x weighted pips — identical
+  on 54 of 54 vertices. A spot with three wheat tiles rated as highly as one with wheat, ore
+  and brick.
+- **Fixing it won no more games.** The road threshold sat at the 88th percentile of road
+  values: on 85.2% of decisions where a road was legal, *every* option was below it. The agent
+  could not expand, so a better opening had nothing to express. Fixing both: **70.7%** against
+  the old agent, and truncated games fell from ~90 per 800 to 8.
+- **The winner is always the player who just acted**, so `step()`'s reward is always `+1` and
+  the loser's never arrives. A learner that consumed it would train on winners only, its
+  critic would converge to `V = 1`, and nothing would crash.
+- **`encoder.encode` was 57% of training time**, recomputing per-vertex harbours and pip
+  potential for a board that had not changed in 14,000 calls.
+- **A `\b` inside a JavaScript template literal is a backspace**, not a word boundary — a
+  pattern that matches nothing while reading as though it should work.
+- **1-ply lookahead does not help.** Leak-safe and correct, and 53.4% against 52.2% over 800
+  games. Recorded because an unwritten negative result gets re-attempted.
+
+---
+
+## Where it stands
+
+The engine and both interfaces are complete and tested.
+
+The heuristic recently got substantially stronger — 70.7% against its previous self over 800
+games — and that moved the yardstick. The champion, trained against the *old* heuristic, now
+scores **55.0% against the new one** with the interval [49.3, 60.5] straddling 50%: it is no
+longer clearly ahead of the hand-written opponent it used to beat comfortably. A retrain from
+the improved teacher is under way, and the promotion gate decides whether it replaces the
+champion.
+
+The lesson worth carrying: **win rates recorded against the heuristic before and after that
+change are not comparable.** Any claim of the form "the bot reached X%" has to say which
+baseline it was measured against.
+
+What is known to be missing, in order of expected value:
+
+1. **Build costs are nowhere.** Neither the observation nor the heuristic knows what a road
+   costs. Affordability is inferred only from which actions happen to be legal.
+2. **Roads have one step of lookahead**, no plan. There is no notion of a route.
+3. **Belief sampling.** Every remaining search idea needs it.
+
+See [`ROADMAP.md`](ROADMAP.md) for the phase history, [`CLAUDE.md`](CLAUDE.md) for working
+notes, and [`docs/`](docs/) for the decision records.
+
+## Tests
+
+```sh
+python -m pytest tests -q       # 753 tests, about 90 seconds
+```

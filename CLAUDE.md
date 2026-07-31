@@ -1,0 +1,180 @@
+# Working notes
+
+Things that are true about this repository and cost time to discover. Read this before
+changing the engine, the observation, or the agents.
+
+`docs/decisions/` holds the full reasoning; this is the short version plus the traps.
+
+---
+
+## Ground rules this codebase actually holds to
+
+**One source of truth.** If a fact exists in two places it will diverge. Geometry is
+generated from `ROW_LENGTHS`, not written down. The browser draws what the server sends and
+decides nothing. The web client is told which image file goes with which resource, because
+the art set calls wheat `weat` and ore `stone` and a second copy of that mapping in
+JavaScript would be a bug waiting to happen.
+
+**Hidden information is impossible, not merely absent.** `PublicView` is an allow-list — a
+new field on `GameState` is invisible to agents until someone adds it deliberately. Anything
+that could leak has a test that mutates the hidden state at constant public counts and demands
+the observable output not move. `tests/helpers.py::scramble_hidden_state` is the shared
+scrambler; use it rather than writing a weaker one.
+
+**Measure before claiming.** Several "obvious" improvements in this project measured as no
+better, and one measured as the opposite. Numbers or it did not happen.
+
+**Confidence intervals, not point estimates.** 200 games gives about ±7 points, which cannot
+tell 45% from 55%. `training/evaluate.py` has a Wilson interval; use it. Several results in
+this session flipped meaning between 200 and 800 games.
+
+---
+
+## Engine invariants the training code depends on
+
+All three are undocumented properties of `CatanEnv`, all three are load-bearing, and all three
+fail *silently*. Pinned in `tests/test_training.py`.
+
+1. **The winner is always the player who just acted.** So `step()`'s reward is always `+1`
+   and `LOSS_REWARD` is unreachable on the normal path. A learner that consumed the returned
+   reward trains on winners only, its critic converges to `V = 1`, every advantage collapses
+   to zero, and nothing crashes. Read `info["winner"]` and write both seats.
+2. **At `GAME_OVER`, `current_player` becomes the winner**, so the terminal observation is
+   the *winner's* view. Bootstrapping the loser's trajectory from it is an exact sign flip on
+   half the data.
+3. **The terminal mask is all-zero.** A masked softmax over nothing.
+
+Also: the game is **not alternating** — during a discard the decision belongs to whoever is
+over the hand limit. `info["player"]` is the authority.
+
+---
+
+## The observation
+
+1,868 floats. `LAYOUT` maps a name to its slice.
+
+```
+tiles      19 x 19   resource, number, odds, robber
+vertices   54 x 16   owner, city, harbour, pip potential, buildability
+roads      72 x  6   owner, buildability
+players     4 x 29   hands and holdings, masked for opponents
+history     4 x 12   production, spending, purchases, idleness  (the public record)
+rolls           12   how often each total has come up
+global          35   phase, last roll, bank, ruleset, bookkeeping
+```
+
+**About 40% of it never changes during a game** and is cached on the `Board`
+(`encoder._static_template`). If you add a board-static feature, put it there — the per-encode
+path was 57% of training time before this existed.
+
+**What is NOT in it, and people assume is:**
+- **Build costs.** Nothing tells the agent what a road costs. It infers affordability only
+  from which actions are legal. This is the largest known gap.
+- **Which numbers a vertex touches.** Only an aggregate "pip potential". The structured net
+  recovers some of it by averaging adjacent tile rows, but "an 8 on ore" is blended with the
+  other two tiles.
+- **Adjacency**, for the flat MLP. It must infer that vertex 23 neighbours 24 from
+  correlations, though `topology.py` knows.
+
+Changing `encoder.SIZE` invalidates every checkpoint. The interfaces check `obs_size` *and*
+`num_actions` before offering a model, because a stale one loads fine and then fails on the
+first move.
+
+---
+
+## The action space
+
+325 flat indices. **Append, never insert** — every existing index keeps its meaning, and the
+structured network's final concatenation slices `other[:, 21:]` open-ended so an appended
+action lands correctly with no code change.
+
+The positional blocks are **not contiguous**: `TRADE_WITH_BANK` sits between the city and
+robber blocks. `training/structured_net.py::_validate` checks this at import; it has caught
+two mistakes already, including one of its own.
+
+---
+
+## Traps
+
+**`VERTEX_TILES` and `TILE_VERTICES` are both keyed by plain integers.** Swapping them
+type-checks, runs, and silently produces nonsense. It happened in `robber_damage`. Name the
+variable after the id it holds.
+
+**Applying an action to a `clone()` can reveal hidden information.** The dev deck, dice deck
+and opponents' hands are copied verbatim, so a lookahead over `BUY_DEV_CARD`, `MOVE_ROBBER`,
+`PLAY_KNIGHT`, `END_TURN` or `PLAY_MONOPOLY` sees the *real* outcome.
+`training.agent.DETERMINISTIC_TYPES` is a correctness boundary, not an optimisation.
+
+**Benchmark persistent collectors with warm-up calls.** Transitions bank in bursts when games
+finish, so a short measurement measures luck. An early benchmark reported 4 workers as faster
+than 8 for exactly this reason.
+
+**Windows spawns rather than forks.** Worker functions must be module-level; a script run from
+a heredoc cannot be a multiprocessing parent because the child cannot re-import `__main__`.
+Torch sizes its OpenMP pool at import, so thread env vars must be set in the *parent* before
+the pool is created.
+
+**A `\b` inside a JavaScript template literal is a backspace**, not a word boundary. The
+resulting pattern matches nothing while reading as though it works. There is a test for stray
+control characters in `app.js`.
+
+**`python -m` with a heredoc and a pipe buffers output.** Use `python -u`, and read
+`checkpoints/metrics.jsonl` for training progress rather than the piped stdout.
+
+---
+
+## Agents and training
+
+**The heuristic is the behaviour-cloning teacher**, so its judgement is where the trained
+policy starts. Improving it raises the ceiling for both. It is also the fixed yardstick — if
+you change it, *win rates recorded against it before and after are not comparable*. Say so
+when reporting.
+
+**Resource weights are tuned for 2-player 15-point play and invert 4-player folklore.**
+Missing brick is the worst opening deficiency (36% win rate), missing wheat nearly free (49%).
+With no player trading, a missing resource costs 4:1 at the bank, so expansion gates the game.
+Do not "fix" these back toward wheat-and-ore without 1v1 evidence.
+
+**Fine-tuning from a clone is not training from scratch.** Use `lr 3e-5`–`1e-4` and
+`entropy 5e-3`. The defaults will destroy what cloning learned before the outcome signal
+replaces it.
+
+**Warm-started runs look like failures for their first ~100 iterations.** One went
+27.8 → 21.9 → 31.6 → 31.1 before climbing to 77.6%. Another started *below* its predecessor
+and overtook at iteration 79. Judged at iteration 59 both would have been abandoned. Check
+whether the intervals overlap before concluding anything.
+
+**The champion is not the newest model.** `models/champion.pt` changes only through
+`training.champion promote`, which requires the Wilson lower bound over 400 games to clear
+50% *and* no regression against the fixed heuristic. The gate has already refused a completed
+run. Never copy a checkpoint into `models/` by hand.
+
+---
+
+## What has been tried and did not work
+
+Recorded so it is not re-attempted.
+
+- **1-ply lookahead with the value head.** Leak-safe, correct, 53.4% vs 52.2% over 800 games.
+  Probably because the trunk is shared, so `V(s')` restates what the policy already encodes.
+- **The opening bug fix alone.** Improved every structural measure of the opening and won no
+  more games, because the road threshold prevented the agent from acting on it.
+- **Gather-and-pool over embeddings** for neighbour aggregation: 3.8 ms at batch 512 for one
+  relation, where the whole flat trunk cost 6.6 ms. Constant incidence matrices on raw
+  features do the same job in 0.33 ms.
+- **Behaviour cloning on a noisy teacher's actual moves.** Caps achievable agreement at the
+  71.2% the noisy teacher shares with the noiseless one. Play noisy, label clean.
+
+---
+
+## Where to look
+
+| | |
+|---|---|
+| Why something is the way it is | `docs/decisions/` — 21 records |
+| What is done and what is next | `ROADMAP.md` |
+| Whether a change helped | `training/evaluate.py`, and use enough games |
+| What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
+
+Run the full suite before committing: `python -m pytest tests -q` (~90 s). Two tests are
+timing-based and flake under load — re-run them alone before believing a failure.

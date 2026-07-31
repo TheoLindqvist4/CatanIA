@@ -18,7 +18,7 @@ from interfaces.web.recorder import Recorder, find, load, replay, summarise, ver
 
 def played_game(tmp_path, seed=5, moves=2000, opponent="hard"):
     """Play a whole game through the web layer, recording it."""
-    game = api.Game(opponent=opponent, seed=seed)
+    game = api.Game(opponent=opponent, seed=seed, record_game=True)
     game.recorder.path = tmp_path / "game.json"
     rng = random.Random(seed)
     for _ in range(moves):
@@ -55,7 +55,7 @@ def test_a_recorded_game_replays_exactly(tmp_path):
 def test_the_seed_is_recorded_even_when_the_caller_gives_none(tmp_path):
     """``reset(seed=None)`` seeds from the OS and the value is then unknowable, which would
     leave a recording that cannot be replayed — a summary, not a record."""
-    game = api.Game(opponent="hard", seed=None)
+    game = api.Game(opponent="hard", seed=None, record_game=True)
     assert isinstance(game.seed, int)
     assert game.recorder.metadata["seed"] == game.seed
 
@@ -108,7 +108,7 @@ def test_the_result_records_the_margin(tmp_path):
 
 def test_an_unfinished_game_is_still_written(tmp_path):
     """Quitting half way leaves a record of how it was going."""
-    game = api.Game(opponent="hard", seed=4)
+    game = api.Game(opponent="hard", seed=4, record_game=True)
     game.recorder.path = tmp_path / "part.json"
     view = game.view()
     options = [i for t in view["actions"]["board"].values() for i in t.values()]
@@ -153,8 +153,10 @@ def test_a_summary_reads_as_prose(tmp_path):
         assert "won by" in text
 
 
-def test_recording_can_be_switched_off():
-    game = api.Game(opponent="hard", seed=1, record_game=False)
+def test_a_game_is_not_recorded_unless_a_person_is_playing():
+    """The default. Tests, benchmarks and scripts all drive api.Game, and if they recorded
+    too the handful of real games would be buried under hundreds of synthetic ones."""
+    game = api.Game(opponent="hard", seed=1)
     assert game.recorder is None
     view = game.view()
     options = [i for t in view["actions"]["board"].values() for i in t.values()]

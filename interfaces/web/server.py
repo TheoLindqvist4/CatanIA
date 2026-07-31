@@ -90,6 +90,10 @@ class Handler(BaseHTTPRequestHandler):
                     opponent=body.get("opponent"),
                     rules_name=body.get("rules", "ranked1v1"),
                     seed=body.get("seed"),
+                    # A game reached over HTTP is one a person is playing, and this is the
+                    # only place that knows it. Everything else driving api.Game — tests,
+                    # benchmarks, scripts — leaves no trace in games/.
+                    record_game=True,
                 )
                 return self._send_json(game.view())
             if path.startswith("/api/game/") and path.endswith("/action"):
