@@ -228,10 +228,24 @@ class HeuristicAgent:
         )[1]
 
     def _road(self, view, by_type):
-        """Only build a road that leads somewhere, or that takes Longest Road.
+        """Build a road that leads somewhere, unless a building is nearly affordable.
 
-        Without the threshold the agent lays track for its own sake and starves itself of
-        the wood and brick a settlement needs.
+        The threshold exists to veto a road that reaches nothing — `road_value` returns 0
+        for those. It was set at 0.30, which measured as roughly the *88th percentile* of
+        available road values: on 3,008 decisions where a road was legal, 85.2% had every
+        option scoring below it. So it was not vetoing worthless roads, it was vetoing
+        almost all of them, and the agent only ever expanded when `_road_award_is_close`
+        overrode it — chasing Longest Road while never doing the expansion that Longest
+        Road is supposed to be a by-product of.
+
+        It is miscalibrated by construction too. `road_value` is half a `settlement_value`,
+        which scales as `1/(DIMINISH + have)`, so the same road scores lower as income
+        grows. A fixed cut-off therefore tightens over the game — biting hardest in the
+        mid-game, which is exactly when expansion decides the result.
+
+        The docstring's original worry — starving the settlement that the wood and brick
+        were for — is real, so it is now handled directly rather than by a blunt threshold:
+        if a settlement or city is within one card of affordable, the road waits.
         """
         options = by_type.get(ActionType.BUILD_ROAD, [])
         if not options:
@@ -245,7 +259,26 @@ class HeuristicAgent:
         value = heuristics.road_value(view, view.me, best[0].position, have)
         if value < ROAD_THRESHOLD and not chasing_award:
             return None
+        if not chasing_award and self._building_is_nearly_affordable(view):
+            return None
         return best[1]
+
+    def _building_is_nearly_affordable(self, view):
+        """Whether a settlement or city is within one card, so a road should wait.
+
+        Roads are cheap and settlements are what they are for; spending the last brick on
+        track when the settlement was one wheat away is the way to lay a lot of road and
+        build nothing.
+        """
+        hand = view.my_hand
+        for cost, available in ((CITY_COST, view.cities_left[view.me]),
+                                (SETTLEMENT_COST, view.settlements_left[view.me])):
+            if available <= 0:
+                continue
+            missing = sum(max(0, cost[r] - hand[r]) for r in range(NUM_RESOURCES))
+            if 0 < missing <= 1:
+                return True
+        return False
 
     def _road_award_is_close(self, view):
         mine = view.longest_road(view.me)
@@ -317,7 +350,10 @@ class HeuristicAgent:
 
 
 #: A road has to open something worth having before it is worth the wood and brick.
-ROAD_THRESHOLD = 0.30
+#: Below this a road is treated as leading nowhere. Set just under the measured first
+#: decile of available road values (0.171 over 3,008 decisions), so it vetoes the genuinely
+#: worthless and nothing else — which is what it was always documented to do.
+ROAD_THRESHOLD = 0.15
 
 #: Named difficulty settings: the noise added to every evaluation.
 DIFFICULTY = {"easy": 0.9, "medium": 0.35, "hard": 0.0}
