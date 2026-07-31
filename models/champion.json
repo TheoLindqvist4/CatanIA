@@ -1,0 +1,10 @@
+{
+  "promoted_at": "2026-07-31 02:20",
+  "source": "C:/Users/theol/AppData/Local/Temp/claude/c--Users-theol-Coding-CatanIA/91d7676a-e1fe-4e3c-bbc7-3f9ba1553dbf/scratchpad/candidate.pt",
+  "observation": 1868,
+  "actions": 325,
+  "beat_heuristic": 0.7157190635451505,
+  "beat_champion": null,
+  "games": 300,
+  "history": []
+}

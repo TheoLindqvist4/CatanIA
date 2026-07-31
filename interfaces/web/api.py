@@ -16,6 +16,7 @@ implementation that could disagree with the engine, which is the problem the rew
 
 import itertools
 import pathlib
+import random
 
 from catan import action_space, encoder, rules
 from catan.actions import ActionType
@@ -30,6 +31,7 @@ from catan.rulesets import BASE_GAME, RANKED_1V1
 from catan.state import NO_OWNER, Phase, Piece
 from catan.topology import NUM_ROADS, NUM_TILES, NUM_VERTICES, ROAD_VERTICES
 from interfaces import render
+from interfaces.web.recorder import Recorder
 from interfaces.render import PLAYER_COLOURS as RENDER_COLOURS, Geometry
 
 #: The human always sits in seat 1, so the client never has to ask which side it is on.
@@ -46,38 +48,25 @@ OPPONENTS = {
 }
 RULESETS = {"ranked1v1": RANKED_1V1, "base": BASE_GAME}
 
-#: A trained policy, if one has been exported to this path. Optional on purpose: the game
-#: must stay playable on a checkout with no PyTorch and no checkpoint, so a missing file or
-#: a missing torch is not an error — that opponent simply is not offered.
-LEARNED_CHECKPOINT = pathlib.Path("checkpoints/policy.pt")
-
-
 def _register_learned():
-    """Offer a trained policy, but only if it was trained on *this* observation.
+    """Offer the champion, if there is a usable one.
 
-    Adding a feature to the encoder changes ``encoder.SIZE``, and a checkpoint from before
-    that change will happily load and then fail with a shape error on the first move. The
-    check is cheap and the alternative is a game that dies mid-turn.
+    Read from ``models/``, never from ``checkpoints/``: a training run owns the latter and
+    rewrites it constantly, and its "best so far" is only the best within that run. A game
+    must not be affected by a fine-tune happening at the same time, and must never be handed
+    a model that a run later turned out to have made worse. See :mod:`training.champion`.
+
+    Every failure — no file, no PyTorch, a model built for a different observation or action
+    space — means the same thing here: offer the heuristic instead.
     """
-    if not LEARNED_CHECKPOINT.is_file():
-        return
     try:
-        from training.agent import PolicyAgent
+        from training import champion
     except ImportError:
         return                                    # no torch on this checkout
 
-    try:
-        agent = PolicyAgent.load(LEARNED_CHECKPOINT)
-        if agent.net.obs_size != encoder.SIZE:
-            return                                # trained on a different observation
-        if agent.net.num_actions != action_space.NUM_ACTIONS:
-            return                                # trained on a different action space
-    except Exception:
-        return                                    # unreadable or from another version
-
-    OPPONENTS["learned"] = lambda seed: PolicyAgent(
-        agent.net, temperature=0.35, seed=seed
-    )
+    if champion.load() is None:
+        return
+    OPPONENTS["learned"] = lambda seed: champion.load(temperature=0.35, seed=seed)
 
 
 _register_learned()
@@ -132,7 +121,8 @@ class Game:
 
     _ids = itertools.count(1)
 
-    def __init__(self, opponent=None, rules_name="ranked1v1", seed=None):
+    def __init__(self, opponent=None, rules_name="ranked1v1", seed=None,
+                 record_game=True):
         opponent = DEFAULT_OPPONENT if opponent is None else opponent
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
@@ -146,7 +136,17 @@ class Game:
         self.opponent = OPPONENTS[opponent](seed)
         self.log = []
 
-        _, self.info = self.env.reset(seed=seed)
+        # A seed is chosen here rather than left to the engine. `reset(seed=None)` seeds
+        # from the OS and the value is then unknowable, which would make the recording
+        # unreplayable — and a recording that cannot be replayed is a summary, not a record.
+        self.seed = random.randrange(1 << 30) if seed is None else seed
+        _, self.info = self.env.reset(seed=self.seed)
+        self.recorder = Recorder(metadata={
+            "opponent": opponent,
+            "rules": rules_name,
+            "seed": self.seed,
+        }, human=HUMAN) if record_game else None
+
         self._record(self.info)
         self._let_opponent_play()
 
@@ -183,8 +183,12 @@ class Game:
                 return
             observation = self.env.observe(self.info["player"])
             action = self.opponent(observation, self.info)
+            if self.recorder:
+                self.recorder.record(self.info, action)
             _, _, _, _, self.info = self.env.step(action)
             self._record(self.info)
+            if self.info["done"] and self.recorder:
+                self.recorder.finish(self.info)
         raise RuntimeError("the opponent would not stop moving")
 
     def play(self, index):
@@ -203,9 +207,15 @@ class Game:
             raise ValueError(f"action {index} is not legal right now")
 
         before = list(self.state.dev_cards[HUMAN])
+        if self.recorder:
+            self.recorder.record(self.info, index)
         _, _, _, _, self.info = self.env.step(index)
         self._record(self.info, drew=_new_card(before, self.state.dev_cards[HUMAN]))
+        if self.info["done"] and self.recorder:
+            self.recorder.finish(self.info)
         self._let_opponent_play()
+        if self.recorder:
+            self.recorder.save()
         return self.view()
 
     def view(self):

@@ -24,17 +24,30 @@ from catan.topology import (
     VERTEX_TILES,
 )
 
-#: What each resource is worth, roughly, in the 1v1 game.
+#: What each resource is worth in a **two-player, 15-point** game.
 #:
-#: Not all equal. Wheat and ore build cities, which are the efficient route to 15 points —
-#: two points each, on ground you already hold. Brick is scarce (3 tiles) and gates early
-#: expansion. Sheep buys the least: settlements and development cards, nothing else.
+#: These invert the familiar four-player ordering, and deliberately. Competitive 1v1 data on
+#: this exact ruleset (15 VP, hand limit 9, Friendly Robber) gives the win rate for a player
+#: who starts with *no* production of a resource:
+#:
+#:     brick 36%   wood 40%   sheep 42%   ore 43%   wheat 49%     (50% = even)
+#:
+#: Missing brick is by far the worst thing that can happen to an opening; missing wheat is
+#: nearly free. A demand-and-supply count says the same: reaching 15 points needs roughly
+#: 22 wood, 22 brick, 15 wheat, 12 ore and 7 sheep, against a board that supplies about
+#: 12.9 pips of wood, 9.7 of brick, 12.9 sheep, 12.9 wheat and 9.7 ore — so brick is the
+#: scarcest relative to what the game asks for, and sheep the least wanted.
+#:
+#: Why the four-player intuition misleads here: with no player-to-player trading (0011) a
+#: resource you do not produce costs 4:1 at the bank, so *expansion* — wood and brick — is
+#: what actually gates a 15-point run. Wheat and ore still build the cities, which is why
+#: neither is pushed below 1.0 despite the win-rate table: four cities alone want 12 ore.
 RESOURCE_WEIGHT = {
-    Resource.WOOD: 1.00,
-    Resource.BRICK: 1.10,
-    Resource.SHEEP: 0.80,
-    Resource.WHEAT: 1.20,
-    Resource.ORE: 1.15,
+    Resource.WOOD: 1.15,
+    Resource.BRICK: 1.35,
+    Resource.SHEEP: 0.70,
+    Resource.WHEAT: 1.05,
+    Resource.ORE: 1.00,
 }
 
 #: Diminishing returns on a resource you already produce. Lower means diversity matters
@@ -90,15 +103,28 @@ def settlement_value(view, player, vertex, current_income=None):
     Marginal, not absolute: each tile is discounted by how much of that resource the player
     already produces, so a spot covering three resources they lack beats a richer one
     covering a fourth wheat.
+
+    **The discount accumulates within the vertex too**, which is the whole point at the
+    opening. Without it, a player who produces nothing yet divides all three tiles by the
+    same ``DIMINISH`` and the function collapses to ``4 x weighted pips`` — measured
+    identical on 54 of 54 vertices. That is a pure pip count wearing the clothes of a
+    diversity heuristic, and it is why openings scored well on pips while a quarter of them
+    could not build a road: a vertex with three wheat tiles was rated exactly as highly as
+    one with wheat, ore and brick.
+
+    The accumulator is in *unweighted* odds, matching what :func:`income` returns. Adding
+    weighted rates here would make the denominator mean something different from the
+    denominator on the next call, and the two have to agree.
     """
-    have = income(view, player) if current_income is None else current_income
+    have = list(income(view, player) if current_income is None else current_income)
     value = 0.0
     for tile in VERTEX_TILES[vertex]:
         resource = view.board.resource_at(tile)
         if resource is None:
             continue
-        rate = odds(view.board.number_at(tile)) * RESOURCE_WEIGHT[resource]
-        value += rate / (DIMINISH + have[resource])
+        rate = odds(view.board.number_at(tile))
+        value += rate * RESOURCE_WEIGHT[resource] / (DIMINISH + have[resource])
+        have[resource] += rate
     return value + port_value(view, vertex, have)
 
 

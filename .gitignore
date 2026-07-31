@@ -25,3 +25,7 @@ Thumbs.db
 /checkpoints/
 /runs/
 /checkpoints_train.log
+
+# Recorded games. Personal, and they grow without bound; the interesting ones are meant to
+# be looked at with `python -m interfaces.web.recorder`, not committed.
+/games/

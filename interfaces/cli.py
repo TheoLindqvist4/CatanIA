@@ -280,21 +280,15 @@ AGENTS = {
 
 # A trained policy joins the roster when one has been exported. Optional: the CLI must work
 # on a checkout with no PyTorch installed.
-if pathlib.Path("checkpoints/policy.pt").is_file():
-    try:
-        from catan import action_space as _action_space, encoder as _encoder
-        from training.agent import PolicyAgent
+# The champion joins the roster when there is one. Optional: the CLI must work on a
+# checkout with no PyTorch, and must not be disturbed by a training run in progress.
+try:
+    from training import champion as _champion
 
-        _learned = PolicyAgent.load("checkpoints/policy.pt")
-        # a checkpoint from before an encoder change loads fine and then fails on the
-        # first move, so check the observation it was trained on
-        if (_learned.net.obs_size == _encoder.SIZE
-                and _learned.net.num_actions == _action_space.NUM_ACTIONS):
-            AGENTS["learned"] = lambda seed, colour: PolicyAgent(
-                _learned.net, temperature=0.35, seed=seed
-            )
-    except Exception:
-        pass
+    if _champion.load() is not None:
+        AGENTS["learned"] = lambda seed, colour: _champion.load(temperature=0.35, seed=seed)
+except ImportError:
+    pass
 
 
 # --------------------------------------------------------------------------- #
