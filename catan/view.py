@@ -2,8 +2,8 @@
 
 A heuristic agent needs the board — where the tiles are, who owns what, what it holds. It
 must **not** see the opponent's cards, or either deck. The observation vector already
-enforces that, but decoding 1808 floats back into meaning to write a heuristic would be
-absurd.
+enforces that, but decoding `encoder.SIZE` floats back into meaning to write a heuristic
+would be absurd.
 
 So :class:`PublicView` wraps the state and exposes an **explicit allow-list**. Anything not
 listed simply is not reachable, which makes cheating impossible rather than merely tested

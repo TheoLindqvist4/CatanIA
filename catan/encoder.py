@@ -28,13 +28,14 @@ Layout
 per-tile, per-vertex or per-road block and reshape it — a graph or convolutional model wants
 ``(19, TILE_FEATURES)`` rather than a flat run. The blocks are:
 
-    tiles      19 x 19   resource, number, production odds, robber
-    vertices   54 x 16   owner, piece, harbour, pip potential, buildability
-    roads      72 x  6   owner, buildability
-    players     4 x 30   hands and holdings, masked for opponents
-    history     4 x 12   the public record: production, spending, purchases, idleness
-    rolls           12   how often each total has come up, and how far in we are
-    global          36   phase, last roll, bank, ruleset, turn bookkeeping
+    tiles         19 x 19   resource, number, production odds, robber
+    vertices      54 x 16   owner, piece, harbour, pip potential, buildability
+    roads         72 x  6   owner, buildability
+    players        4 x 29   hands and holdings, masked for opponents
+    affordability  4 x  4   my hand against each purchase, priced through my trade rates
+    history        4 x 12   the public record: production, spending, purchases, idleness
+    rolls              12   how often each total has come up, and how far in we are
+    global             35   phase, last roll, bank, ruleset, turn bookkeeping
 
 Every value is scaled into roughly ``[0, 1]``, using exact maxima where one exists (a
 resource count cannot exceed the bank's 19) and a documented soft cap otherwise.
@@ -44,7 +45,15 @@ from catan import rules
 from catan.board import GENERIC_HARBOUR
 from catan.dev_cards import DECK_SIZE as DEV_DECK_SIZE
 from catan.dev_cards import DECK_COUNTS, ROAD_BUILDING_ROADS, DevCard
-from catan.resources import BANK_PER_RESOURCE, BANK_RATE, NUM_RESOURCES, Resource, total
+from catan.resources import (
+    BANK_PER_RESOURCE,
+    BANK_RATE,
+    NUM_RESOURCES,
+    PURCHASE_NAMES,
+    PURCHASES,
+    Resource,
+    total,
+)
 from catan.state import (
     MAX_CITIES,
     MAX_PLAYERS,
@@ -140,6 +149,42 @@ PLAYER_FEATURES = (
     + 1                   # discards still owed
 )
 
+#: Per purchase in :data:`catan.resources.PURCHASES`, how far my hand is from paying for it.
+#:
+#: The cost *table* is deliberately not encoded: the four costs are identical in every state
+#: a network will ever see, so a constant input carries no information and folds into a bias
+#: in one gradient step. What decides a turn is the state-dependent difference between the
+#: hand and the price — and, since a deficit is closed at the bank, that difference priced
+#: through my own harbours. One brick short holding six wood is two cards away at a 2:1 wood
+#: harbour, three at a 3:1, four at 4:1, and out of reach on three wood.
+#:
+#: Affordability, not legality: an empty development deck, a spent city piece and a vertex
+#: with nowhere legal to build do not move these rows. Those facts are already in the global
+#: block, the player block and the per-vertex flags respectively, and folding them in here
+#: would make one float mean three things. ``_encode_roads`` reports reachability "cost
+#: aside" for the same reason; this block is the mirror, and the two compose.
+AFFORDABILITY_FEATURES = (
+    1                     # affordable now (a Road Building credit counts as paid)
+    + 1                   # cards short, as a fraction of what this purchase costs
+    + 1                   # cheapest cards given to the bank to close the gap; 1.0 out of reach
+    + 1                   # the gap can be closed now, by trades the bank can honour
+)
+
+#: Cards handed to the bank to close a gap. An exact maximum exists — five trades at
+#: ``BANK_RATE`` is 20 — but it is unreachable in play: over 63,372 measured
+#: ``(player, purchase)`` samples, only 0.02% of coverable gaps cost more than two 4:1
+#: trades and none cost 20, so dividing by the exact maximum would leave every live value in
+#: the bottom fifth of the range. A soft cap, therefore, clipped — and out of reach saturates
+#: at the same 1.0, so the column is monotone "cards this would cost me" throughout. The
+#: collision at the top is separated by the coverable flag in the same row.
+TRADE_PRICE_SCALE = float(2 * BANK_RATE)
+
+#: Exact maximum of the cards-short column: every card of the cost is missing.
+_PURCHASE_TOTALS = tuple(float(sum(cost)) for cost in PURCHASES)
+
+#: The one purchase a development card can make free, so the credit is folded in.
+ROAD_ROW = PURCHASE_NAMES.index("road")
+
 #: Per player, in the public record: cumulative production and cumulative spending, both
 #: per resource, plus development cards bought and how long since they last built.
 HISTORY_FEATURES = NUM_RESOURCES + NUM_RESOURCES + 1 + 1
@@ -173,6 +218,7 @@ def _build_layout():
         ("vertices", NUM_VERTICES * VERTEX_FEATURES),
         ("roads", NUM_ROADS * ROAD_FEATURES),
         ("players", MAX_PLAYERS * PLAYER_FEATURES),
+        ("affordability", len(PURCHASES) * AFFORDABILITY_FEATURES),
         ("history", MAX_PLAYERS * HISTORY_FEATURES),
         ("rolls", ROLL_HISTORY_FEATURES),
         ("global", GLOBAL_FEATURES),
@@ -190,6 +236,7 @@ SHAPES = {
     "vertices": (NUM_VERTICES, VERTEX_FEATURES),
     "roads": (NUM_ROADS, ROAD_FEATURES),
     "players": (MAX_PLAYERS, PLAYER_FEATURES),
+    "affordability": (len(PURCHASES), AFFORDABILITY_FEATURES),
     "history": (MAX_PLAYERS, HISTORY_FEATURES),
 }
 
@@ -295,11 +342,15 @@ def encode(state, me=None):
 
     out = _static_template(state.board).copy()
     slots = player_slots(state, me)
+    # Hoisted because two blocks want it: the player block reports it as a feature, and the
+    # affordability block prices deficits through it. `rates` is always *me*'s.
+    rates = rules.trade_rates(state, me)
 
     _encode_tiles(state, out)
     _encode_vertices(state, out, me, slots)
     _encode_roads(state, out, me, slots)
-    _encode_players(state, out, me, slots)
+    _encode_players(state, out, me, slots, rates)
+    _encode_affordability(state, out, me, rates)
     _encode_history(state, out, me, slots)
     _encode_global(state, out, me)
     return out
@@ -394,7 +445,9 @@ def _encode_roads(state, out, me, slots):
         ) else 0.0
 
 
-def _encode_players(state, out, me, slots):
+def _encode_players(state, out, me, slots, my_rates):
+    """``my_rates`` is ``me``'s trade rates, hoisted by :func:`encode` and shared with the
+    affordability block. Opponents' rates are still computed here — they are public."""
     base = LAYOUT["players"].start
     for player, slot in slots.items():
         at = base + slot * PLAYER_FEATURES
@@ -444,11 +497,93 @@ def _encode_players(state, out, me, slots):
         out[at + 2] = state.roads_left[player] / MAX_ROADS
         at += 3
 
-        for resource, rate in enumerate(rules.trade_rates(state, player)):
+        rates = my_rates if mine else rules.trade_rates(state, player)
+        for resource, rate in enumerate(rates):
             out[at + resource] = rate / BANK_RATE
         at += NUM_RESOURCES
 
         out[at] = state.discards_owed[player] / MAX_OF_ONE_RESOURCE
+
+
+def _encode_affordability(state, out, me, rates):
+    """How far my hand is from each purchase, priced through my own bank rates.
+
+    See :data:`AFFORDABILITY_FEATURES` for why the cost table itself is not encoded.
+
+    Two of the four columns are conjunctions the first layer cannot form. A per-resource
+    shortfall is a hinge on one input coordinate at an integer threshold, and the first
+    ``Linear`` produces those for free from the hand composition — but "every one of four
+    resources is covered" is not a threshold on any sum (four wood passes every sum test and
+    affords nothing), and neither is ``sum(surplus[g] // rates[g]) >= need``, which divides by
+    a rate that moves with harbour ownership. The other two columns are the graded distances
+    underneath, which is what the critic needs: masking touches only the policy logits, so the
+    value head never sees legality at all and would otherwise infer progress from five raw
+    card counts.
+
+    **Mine alone.** Every value is a function of ``me``'s hand. Filling it from
+    ``state.current_player`` would hand over an opponent's exact hand composition on every
+    discard, since the discard decision belongs to whoever is over the limit.
+
+    ⚠️ Encoding from inside :func:`catan.rules.can_play_road_building`'s probe window would
+    read inflated Road Building credit — it temporarily increments ``state.free_roads`` and
+    restores it in a ``finally``. Nothing in the current call graph does.
+    """
+    base = LAYOUT["affordability"].start
+    hand = state.hands[me]
+    bank = state.bank
+    # Credit is spent in preference to cards and cannot be declined, so while it is
+    # outstanding a road genuinely costs nothing. The counter is global and lapses at
+    # END_TURN, so it is only mine while I am the one acting.
+    free_road = state.free_roads > 0 and state.current_player == me
+
+    for row, cost in enumerate(PURCHASES):
+        at = base + row * AFFORDABILITY_FEATURES
+
+        need, stocked = 0, True
+        if not (free_road and row == ROAD_ROW):
+            for resource in range(NUM_RESOURCES):
+                short = cost[resource] - hand[resource]
+                if short > 0:
+                    need += short
+                    # A trade returns exactly one card, and paying refills the bank's pile
+                    # for what I *gave*, never for what I take. So covering a deficit of
+                    # `short` needs `short` of them left, not merely one.
+                    if bank[resource] < short:
+                        stocked = False
+
+        if need == 0:
+            out[at] = 1.0          # affordable now
+            out[at + 3] = 1.0      # and so trivially coverable
+            continue               # cards short and price stay at the template's 0.0
+
+        # Each trade is paid with `rates[give]` cards of a *single* resource held at once, so
+        # fundable trades are floored per resource. Pooling the surplus first is the natural
+        # bug and is wrong: three wood and three sheep at 4:1 fund nothing. Surplus is
+        # measured *above the cost*, which protects the cards this purchase needs and, since
+        # surplus in `give` implies no shortfall in `give`, makes the engine's give != take
+        # rule impossible to violate rather than separately enforced. That same filter keeps a
+        # negative surplus out of the floor division, where -1 // 4 is -1 rather than 0.
+        offers = sorted(
+            (rates[give], (hand[give] - cost[give]) // rates[give])
+            for give in range(NUM_RESOURCES)
+            if hand[give] - cost[give] >= rates[give]
+        )
+        # Cheapest rate first is provably the minimum bill: every trade yields exactly one
+        # card whatever it cost, so covering a fixed number of cards means buying the
+        # cheapest units. `test_the_cheapest_plan_is_the_cheapest_one` checks it exhaustively
+        # rather than taking the argument on trust.
+        price, left = 0, need
+        for rate, fundable in offers:
+            taken = fundable if fundable < left else left
+            price += taken * rate
+            left -= taken
+            if not left:
+                break
+
+        coverable = left == 0 and stocked
+        out[at + 1] = need / _PURCHASE_TOTALS[row]
+        out[at + 2] = min(price / TRADE_PRICE_SCALE, 1.0) if coverable else 1.0
+        out[at + 3] = 1.0 if coverable else 0.0
 
 
 def _encode_history(state, out, me, slots):
@@ -544,9 +679,15 @@ def block(observation, name):
 
 def _validate():
     """Layout consistency, at import."""
+    order = ("tiles", "vertices", "roads", "players", "affordability",
+             "history", "rolls", "global")
+    # Without this, a block can be added to `_build_layout` and forgotten here, and the
+    # start/covered check below catches it only indirectly — or, if it is appended last,
+    # not at all.
+    assert tuple(LAYOUT) == order, "a block was added to the layout but not to this list"
     assert LAYOUT["global"].stop == SIZE
     covered = 0
-    for name in ("tiles", "vertices", "roads", "players", "history", "rolls", "global"):
+    for name in order:
         assert LAYOUT[name].start == covered, f"{name} does not follow the previous block"
         covered = LAYOUT[name].stop
     assert covered == SIZE

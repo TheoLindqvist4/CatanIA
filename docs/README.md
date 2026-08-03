@@ -51,6 +51,7 @@ the reasoning at the time is the point.
 | [0019](decisions/0019-cache-the-board-static-observation.md) | Cache the board-static half of an observation | accepted |
 | [0020](decisions/0020-parallel-rollouts-and-lookahead.md) | Parallel rollouts, and a lookahead that does not cheat | accepted |
 | [0021](decisions/0021-structure-aware-network.md) | A network that knows the board has a shape | accepted |
+| [0022](decisions/0022-affordability-features.md) | The agent can see how far its hand is from a purchase | accepted |
 
 ## Worth knowing
 

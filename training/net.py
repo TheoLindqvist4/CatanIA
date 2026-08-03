@@ -1,7 +1,8 @@
 """The policy and value network.
 
-A plain MLP over the 1808-float observation, with two heads: 324 action logits and one
-value. Shared trunk, because the features that say "this position is winning" are the same
+A plain MLP over the observation (``encoder.SIZE`` floats), with two heads: one logit per
+action and one value. Shared trunk, because the features that say "this position is winning"
+are the same
 features that say "build here" — and on CPU a second trunk doubles the cost of every
 forward pass in the rollout, which is where the time goes.
 
@@ -38,7 +39,7 @@ def _layer(in_size, out_size, gain):
 
 
 class PolicyValueNet(nn.Module):
-    """``observation -> (logits over 324 actions, state value)``.
+    """``observation -> (one logit per action, state value)``.
 
     Args:
         obs_size: length of an observation, ``catan.encoder.SIZE``.

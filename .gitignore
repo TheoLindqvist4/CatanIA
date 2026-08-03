@@ -29,3 +29,8 @@ Thumbs.db
 # Recorded games. Personal, and they grow without bound; the interesting ones are meant to
 # be looked at with `python -m interfaces.web.recorder`, not committed.
 /games/
+
+# Hand-made copies of a working model, kept while an observation change invalidates it.
+# `models/champion.pt` is in git and recoverable from history; the checkpoints are not, so a
+# copy is the only way back to a run that has already been paid for.
+/backups/

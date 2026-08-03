@@ -1,10 +1,10 @@
 """A structure-aware policy/value network.
 
-The flat :class:`~training.net.PolicyValueNet` treats the 1808-float observation as an
-unordered bag of numbers. It is not one. ``catan.encoder`` lays it out as regular blocks —
-19 tiles x 19, 54 vertices x 16, 72 roads x 6, then 4 players x 29 and 35 globals — and
-``catan.action_space`` lays the 324 actions out the same way: 275 of them (84.9%) name a
-board element.
+The flat :class:`~training.net.PolicyValueNet` treats the observation as an unordered bag of
+numbers. It is not one. ``catan.encoder`` lays it out as regular blocks — 19 tiles x 19,
+54 vertices x 16, 72 roads x 6, then the un-positional remainder — and
+``catan.action_space`` lays the actions out the same way: 275 of them (84.6%) name a board
+element.
 
 Three things follow, and each is measured rather than assumed.
 
@@ -382,6 +382,16 @@ def _validate():
     assert VERTEX_SPAN.stop - VERTEX_SPAN.start == _V_ROWS * _V_FEAT
     assert ROAD_SPAN.stop - ROAD_SPAN.start == _R_ROWS * _R_FEAT
     assert (_T_ROWS, _V_ROWS, _R_ROWS) == (NUM_TILES, NUM_VERTICES, NUM_ROADS)
+
+    # The three positional spans and the context vector must between them cover the whole
+    # observation. A block added anywhere in the gap would be read by *nothing*: the spans
+    # above are looked up by name so they still resolve, and CONTEXT_START still points at
+    # the players block, so the new floats are simply never fed to the network — no
+    # exception, no misalignment, just a feature that silently does not exist.
+    assert ROAD_SPAN.stop == CONTEXT_START, (
+        "an observation block fell between the positional blocks and the context vector, "
+        "where the network reads neither"
+    )
 
     # the positional blocks must be contiguous and in the order the final cat assumes
     assert _ROAD_SLICE.start == 1 and _ROAD_SLICE.stop == _SETTLEMENT_SLICE.start

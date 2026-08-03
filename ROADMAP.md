@@ -48,7 +48,7 @@ catan/
   actions.py       # ✅ Action = (type, position, extra)
   rules.py         # ✅ legal_actions / apply — the single legality authority
   action_space.py  # ✅ 324 flat indices + legal_mask(state)
-  encoder.py       # ✅ 1808-float observation, perspective-rotated, hidden-info masked
+  encoder.py       # ✅ encoder.SIZE-float observation, perspective-rotated, hidden-info masked
   env.py           # ✅ Gymnasium-style reset(seed) / step(index)
   agents.py        # ✅ random and greedy baselines + play_match
 interfaces/
@@ -254,7 +254,8 @@ adding 3–4 player training or human play.
       the engine was rebuilt to remove. Costs +2% over `legal_actions`.
       The load-bearing test asserts every action the rules can ever offer is expressible: if one
       were not, the mask would drop it silently and an agent could never choose it.
-- [x] **`encoder.py`**: a **1808**-float observation with named blocks (`LAYOUT`, `SHAPES`) so a
+- [x] **`encoder.py`**: a fixed-length observation (**1808** floats when this phase closed,
+      1,884 today) with named blocks (`LAYOUT`, `SHAPES`) so a
       graph or convolutional model can reshape rather than being forced through an MLP.
       Perspective-rotated — *me* is always player slot 0, so one network plays every seat.
       Hidden information masked per observer, enforced by **leak detectors** that mutate the

@@ -43,6 +43,17 @@ SETTLEMENT_COST = _cost(wood=1, brick=1, sheep=1, wheat=1)
 CITY_COST = _cost(wheat=2, ore=3)
 DEV_CARD_COST = _cost(sheep=1, wheat=1, ore=1)
 
+#: Everything the rules price in cards, in a fixed order. Anything deriving a per-purchase
+#: feature iterates this rather than restating a cost — the encoder's affordability block is
+#: the reason it exists.
+#:
+#: **Append, never insert.** A row index here is part of the observation layout, so it is
+#: baked into every trained checkpoint.
+PURCHASES = (ROAD_COST, SETTLEMENT_COST, CITY_COST, DEV_CARD_COST)
+
+#: Names for :data:`PURCHASES`, so a consumer can index by meaning rather than by position.
+PURCHASE_NAMES = ("road", "settlement", "city", "dev card")
+
 #: Cards of each resource in the bank at the start of the game.
 BANK_PER_RESOURCE = 19
 

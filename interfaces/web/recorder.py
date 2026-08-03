@@ -7,7 +7,7 @@ opinion of what a game looks like.
 **The record is the seed and the moves, and that is enough.** The engine is deterministic —
 the same seed produces the same board, the same shuffled decks and the same dice — so a
 seed plus the sequence of action indices reconstructs the game *exactly*, down to every
-observation the network saw. Storing observations instead would be 1,868 floats per
+observation the network saw. Storing observations instead would be `encoder.SIZE` floats per
 decision for something already implied. :func:`replay` is the proof: it rebuilds the game
 and checks it lands where the recording says it did.
 

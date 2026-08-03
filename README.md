@@ -23,7 +23,7 @@ python -m interfaces.web        # then open http://127.0.0.1:8000
 | **A playable web interface** | Click the board to build. Painted artwork, resources as cards, full game log |
 | **A hand-written opponent** | Positional judgement from marginal value — beats a naive greedy agent 96.7% |
 | **A trained opponent** | PPO self-play, warm-started by cloning the heuristic |
-| **The machinery to improve it** | 1,868-float observation, 325 discrete actions, parallel rollouts, a promotion gate |
+| **The machinery to improve it** | 1,884-float observation, 325 discrete actions, parallel rollouts, a promotion gate |
 | **753 tests** | Including leak detectors that prove no agent can see hidden information |
 
 ## Quick start
@@ -174,7 +174,7 @@ catan/                 the engine — no dependencies
   state.py               everything that changes during a game
   rules.py               legal_actions / apply — the only legality authority
   action_space.py        325 flat indices + a legality mask
-  encoder.py             the 1,868-float observation
+  encoder.py             the 1,884-float observation
   view.py                PublicView — what a player may see
   heuristics.py          position evaluation
   agents.py              the baseline agents and a match harness
@@ -191,7 +191,7 @@ training/              the only package that imports PyTorch
   clone.py                    warm start by imitating the heuristic
   champion.py                 the model the game plays, and the promotion gate
 
-docs/decisions/        21 records of why things are the way they are
+docs/decisions/        22 records of why things are the way they are
 ```
 
 ---
@@ -237,10 +237,16 @@ baseline it was measured against.
 
 What is known to be missing, in order of expected value:
 
-1. **Build costs are nowhere.** Neither the observation nor the heuristic knows what a road
-   costs. Affordability is inferred only from which actions happen to be legal.
+1. **Which numbers a vertex touches.** The observation gives an aggregate "pip potential", so
+   "an 8 on ore" is blended with the two tiles beside it.
 2. **Roads have one step of lookahead**, no plan. There is no notion of a route.
 3. **Belief sampling.** Every remaining search idea needs it.
+
+Build costs used to head that list — the observation said nothing about what a road cost, and
+affordability was inferred only from which actions happened to be legal. The `affordability`
+block now encodes how far the hand is from each purchase and what closing the gap would cost
+at the bank, which is the part that actually varies
+([decision 0022](docs/decisions/0022-affordability-features.md)).
 
 See [`ROADMAP.md`](ROADMAP.md) for the phase history, [`CLAUDE.md`](CLAUDE.md) for working
 notes, and [`docs/`](docs/) for the decision records.

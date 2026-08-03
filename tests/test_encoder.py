@@ -12,7 +12,16 @@ import catan.topology as T
 from catan import dice, encoder as E, rules
 from catan.board import GENERIC_HARBOUR
 from catan.dev_cards import DevCard
-from catan.resources import NUM_RESOURCES, Resource
+from catan import resources
+from catan.dev_cards import ROAD_BUILDING_ROADS
+from catan.resources import (
+    BANK_RATE,
+    NUM_RESOURCES,
+    PURCHASE_NAMES,
+    PURCHASES,
+    SPECIFIC_HARBOUR_RATE,
+    Resource,
+)
 from catan.rulesets import ALL, BASE_GAME, RANKED_1V1
 from catan.state import MAX_PLAYERS, GameState, NO_OWNER, Phase, Piece
 from helpers import (
@@ -77,6 +86,7 @@ def test_repeated_blocks_have_consistent_shapes():
     assert E.SHAPES["vertices"][0] == T.NUM_VERTICES
     assert E.SHAPES["roads"][0] == T.NUM_ROADS
     assert E.SHAPES["players"][0] == MAX_PLAYERS
+    assert E.SHAPES["affordability"][0] == len(PURCHASES)
 
 
 def test_the_length_never_varies():
@@ -438,6 +448,45 @@ def test_the_ruleset_is_part_of_the_observation():
     assert base[E.LAYOUT["global"]] != ranked[E.LAYOUT["global"]]
 
 
+def test_my_affordability_survives_scrambling_the_opponents_hand(played_game):
+    """It is derived from my own hand, so it must be invariant under everything hidden."""
+    state = played_game
+    for me in state.players:
+        before = E.encode(state, me)[E.LAYOUT["affordability"]]
+        scrambled = scramble_hidden_state(state.clone(), me)
+        after = E.encode(scrambled, me)[E.LAYOUT["affordability"]]
+        assert before == after, "affordability moved when hidden cards changed"
+
+
+def test_the_affordability_block_describes_me_not_whoever_is_deciding():
+    """Building it from ``state.current_player`` would pass every other test in this file —
+    ``mid_game()`` makes the two the same player. It would also hand over the discarding
+    opponent's exact hand composition on every 7, which is why this test is not optional."""
+    state = mid_game()
+    give(state, 1, wood=1, brick=1)                            # player 1 can afford a road
+    give(state, 2, wheat=state.ruleset.hand_limit + 4)          # only player 2 is over
+    state.rolled_this_turn = True
+    rules.begin_robber(state)
+    assert state.phase is Phase.DISCARD
+    assert state.current_player == 2, "the decision belongs to the opponent"
+
+    assert afford(state, me=1)[ROAD] == [1.0, 0.0, 0.0, 1.0]
+    assert afford(state, me=2)[ROAD][AFFORDABLE] == 0.0, "player 2 holds only wheat"
+
+    before = E.encode(state, 1)[E.LAYOUT["affordability"]]
+    state.hands[2][Resource.BRICK] += 5
+    assert E.encode(state, 1)[E.LAYOUT["affordability"]] == before, \
+        "my affordability moved when the opponent's hand changed"
+
+    # The mirror leg, so "invariant" cannot be passing for the trivial reason that the block
+    # never moves. One sheep and one wheat completes the settlement I was two cards from.
+    assert afford(state, me=1)[SETTLEMENT][AFFORDABLE] == 0.0
+    state.hands[1][Resource.SHEEP] += 1
+    state.hands[1][Resource.WHEAT] += 1
+    assert afford(state, me=1)[SETTLEMENT] == [1.0, 0.0, 0.0, 1.0]
+    assert E.encode(state, 1)[E.LAYOUT["affordability"]] != before
+
+
 def test_whose_decision_it_is_is_visible():
     """During a discard the decision can belong to an opponent, so an agent must be able
     to tell that it is not being asked to move."""
@@ -452,6 +501,244 @@ def test_whose_decision_it_is_is_visible():
     flag_at = (len(Phase) + len(E.ROLLS) + 1 + 1 + NUM_RESOURCES + 1 + 1 + 1 + 1)
     assert E.encode(state, 2)[E.LAYOUT["global"]][flag_at] == 1.0
     assert E.encode(state, 1)[E.LAYOUT["global"]][flag_at] == 0.0
+
+
+# =========================================================================== #
+# AFFORDABILITY — my hand against the cost table                              #
+# =========================================================================== #
+#
+# The four columns of a row, by name, so no test indexes a literal.
+AFFORDABLE, CARDS_SHORT, TRADE_PRICE, COVERABLE = range(E.AFFORDABILITY_FEATURES)
+
+ROAD, SETTLEMENT, CITY, DEV_CARD = range(len(PURCHASES))
+
+
+def no_harbour(seed=1):
+    """A build decision for player 1 with no harbour, so every rate is 4:1.
+
+    ``mid_game()`` cannot be used for anything rate-sensitive: its random setup happens to
+    put player 1 on vertex 33, which carries a generic harbour, so its rates are 3:1. The
+    assertion is the point — a change to board generation should fail loudly here rather
+    than quietly change what the tests below measure.
+    """
+    state = fresh(seed=seed, num_players=2)
+    in_build_phase(state, 1)
+    assert rules.trade_rates(state, 1) == [BANK_RATE] * NUM_RESOURCES
+    return state
+
+
+def afford(state, me=1):
+    return E.block(E.encode(state, me), "affordability")
+
+
+def harbour_vertex(state, wanted):
+    """A vertex carrying ``wanted``, found rather than written down."""
+    return next(v for v in range(1, T.NUM_VERTICES + 1)
+                if wanted in state.board.harbours_at(v))
+
+
+def test_the_affordability_block_agrees_with_can_afford():
+    """The cross-check that keeps the block honest, like the buildability flags above."""
+    state = mid_game()
+    for row, cost in enumerate(PURCHASES):
+        expected = float(resources.can_afford(state.hands[1], cost))
+        assert afford(state)[row][AFFORDABLE] == expected, PURCHASE_NAMES[row]
+
+    give(state, 1, wheat=2)          # affords nothing at all now
+    for row, cost in enumerate(PURCHASES):
+        expected = float(resources.can_afford(state.hands[1], cost))
+        assert afford(state)[row][AFFORDABLE] == expected, PURCHASE_NAMES[row]
+
+
+def test_one_card_short_of_a_settlement_shows_a_quarter():
+    """The judgement the block exists for. Today's observation cannot tell "one card away"
+    from "three cards away" — both are simply an illegal action."""
+    state = no_harbour()
+    give(state, 1, wood=1, brick=1, sheep=1)          # only the wheat is missing
+    row = afford(state)[SETTLEMENT]
+    assert row[AFFORDABLE] == 0.0
+    assert row[CARDS_SHORT] == pytest.approx(1 / sum(resources.SETTLEMENT_COST))
+
+
+def test_the_deficit_counts_cards_not_kinds():
+    state = no_harbour()
+    give(state, 1, wheat=2)                            # the city still wants three ore
+    row = afford(state)[CITY]
+    assert row[CARDS_SHORT] == pytest.approx(3 / sum(resources.CITY_COST))
+
+
+def test_a_two_for_one_harbour_halves_the_price_of_a_deficit():
+    """The whole point of pricing through the rates, and the direction is easy to get
+    backwards: ``trade_rates`` is indexed by the resource *given*, so a wheat harbour makes
+    wheat cheap to dump and does nothing to help acquire wheat."""
+    state = no_harbour()
+    give(state, 1, wood=6)                             # one brick short, five spare wood
+    assert afford(state)[ROAD][TRADE_PRICE] == pytest.approx(BANK_RATE / E.TRADE_PRICE_SCALE)
+    assert afford(state)[ROAD][COVERABLE] == 1.0
+
+    put_building(state, 1, harbour_vertex(state, Resource.WOOD))
+    assert rules.trade_rates(state, 1)[Resource.WOOD] == SPECIFIC_HARBOUR_RATE
+    assert afford(state)[ROAD][TRADE_PRICE] == pytest.approx(
+        SPECIFIC_HARBOUR_RATE / E.TRADE_PRICE_SCALE
+    )
+
+
+def test_surplus_spread_across_resources_cannot_fund_a_trade():
+    """A trade is paid with four cards of *one* resource, so the surplus is floored per
+    resource. Pooling it first is the natural bug and it is wrong."""
+    state = no_harbour()
+    give(state, 1, wood=3, sheep=3)                    # six spare cards, no trade fundable
+    row = afford(state)[ROAD]
+    assert row[COVERABLE] == 0.0
+    assert row[TRADE_PRICE] == 1.0
+
+
+def test_the_cards_a_purchase_needs_are_not_counted_as_surplus():
+    state = no_harbour()
+    give(state, 1, brick=4)             # the road wants one brick, so the surplus is three
+    assert afford(state)[ROAD][COVERABLE] == 0.0
+
+    give(state, 1, brick=5)                            # now four spare, one trade fundable
+    assert afford(state)[ROAD][COVERABLE] == 1.0
+    assert afford(state)[ROAD][TRADE_PRICE] == pytest.approx(BANK_RATE / E.TRADE_PRICE_SCALE)
+
+    # And the give == take leg: eight spare wheat funds two trades, three ore are needed.
+    give(state, 1, wheat=10)
+    assert afford(state)[CITY][COVERABLE] == 0.0
+
+
+def test_the_cheapest_trades_are_counted_first():
+    state = no_harbour()
+    put_building(state, 1, harbour_vertex(state, Resource.WOOD))
+    put_building(state, 1, harbour_vertex(state, GENERIC_HARBOUR))
+    assert rules.trade_rates(state, 1) == [2, 3, 3, 3, 3]
+
+    # The city needs two more ore. Wood funds one trade at 2, sheep two at 3, so the
+    # cheapest bill is 2 + 3 = 5. Any other ordering pays 6.
+    give(state, 1, wood=3, sheep=6, wheat=2, ore=1)
+    assert afford(state)[CITY][TRADE_PRICE] == pytest.approx(5 / E.TRADE_PRICE_SCALE)
+
+
+@pytest.mark.slow
+def test_the_cheapest_plan_is_the_cheapest_one():
+    """Cheapest-rate-first is claimed to be optimal, not merely plausible — every bank
+    trade yields exactly one card whatever it cost, so the cheapest units win. Checked
+    against an exhaustive search rather than argued, because a future edit that swaps the
+    sort key would still pass every other test here."""
+    import itertools
+
+    def brute(hand, cost, rates, bank):
+        need = sum(max(0, cost[r] - hand[r]) for r in range(NUM_RESOURCES))
+        if need == 0:
+            return 0, True
+        if any(bank[r] < max(0, cost[r] - hand[r]) for r in range(NUM_RESOURCES)):
+            return None, False
+        # clamped at zero: a resource the purchase is short of has nothing to give
+        spare = [max(0, hand[g] - cost[g]) for g in range(NUM_RESOURCES)]
+        best = None
+        for counts in itertools.product(range(need + 1), repeat=NUM_RESOURCES):
+            if sum(counts) != need:
+                continue
+            if any(counts[g] * rates[g] > spare[g] for g in range(NUM_RESOURCES)):
+                continue
+            bill = sum(counts[g] * rates[g] for g in range(NUM_RESOURCES))
+            best = bill if best is None else min(best, bill)
+        return best, best is not None
+
+    rng = random.Random(0)
+    state = no_harbour()
+    for _ in range(400):
+        hand = [rng.randint(0, 8) for _ in range(NUM_RESOURCES)]
+        bank = [rng.randint(0, 4) for _ in range(NUM_RESOURCES)]
+        state.hands[1] = list(hand)
+        state.bank = list(bank)
+        rates = rules.trade_rates(state, 1)
+        rows = afford(state)
+
+        for row, cost in enumerate(PURCHASES):
+            price, coverable = brute(hand, cost, rates, bank)
+            assert rows[row][COVERABLE] == float(coverable), (hand, bank, cost)
+            if coverable and price:
+                assert rows[row][TRADE_PRICE] == pytest.approx(
+                    min(price / E.TRADE_PRICE_SCALE, 1.0)
+                ), (hand, bank, cost)
+
+
+def test_an_empty_bank_leaves_a_deficit_uncoverable():
+    state = no_harbour()
+    give(state, 1, wood=12)                            # one brick short, plenty to trade
+    assert afford(state)[ROAD][COVERABLE] == 1.0
+
+    short_before = afford(state)[ROAD][CARDS_SHORT]
+    state.bank[Resource.BRICK] = 0
+    row = afford(state)[ROAD]
+    assert row[COVERABLE] == 0.0
+    assert row[TRADE_PRICE] == 1.0
+    assert row[CARDS_SHORT] == short_before, "the bank constrains the plan, not the distance"
+
+    # A bank holding *some* of what is needed is still not enough: each trade takes one
+    # card, and paying refills the pile you gave from, never the one you took.
+    state = no_harbour()
+    give(state, 1, wheat=2, sheep=16)                  # three ore short, four trades funded
+    assert afford(state)[CITY][COVERABLE] == 1.0
+    state.bank[Resource.ORE] = 1
+    assert afford(state)[CITY][COVERABLE] == 0.0
+
+
+def test_a_free_road_needs_no_cards():
+    state = no_harbour()
+    give(state, 1)                                     # nothing at all in hand
+    assert afford(state)[ROAD] == [0.0, 1.0, 1.0, 0.0]
+
+    state.free_roads = ROAD_BUILDING_ROADS
+    assert afford(state)[ROAD] == [1.0, 0.0, 0.0, 1.0]
+    assert afford(state)[SETTLEMENT] == [0.0, 1.0, 1.0, 0.0], "only the road is free"
+
+    state.free_roads = 0
+    assert afford(state)[ROAD] == [0.0, 1.0, 1.0, 0.0]
+
+    # The counter is global and lapses at END_TURN, so credit outstanding while an opponent
+    # acts is not mine.
+    state.free_roads = 1
+    state.turn_number = state.player_order.index(2)
+    assert state.current_player == 2
+    assert afford(state)[ROAD] == [0.0, 1.0, 1.0, 0.0]
+
+
+def test_affordability_is_not_legality():
+    """The block's inputs are exactly hand, costs, rates, free roads and the bank. Piece
+    supply, deck size and placement are already encoded elsewhere, and folding any of them
+    in here would make one float mean several things."""
+    state = no_harbour()
+    give(state, 1, sheep=1, wheat=1, ore=1)
+
+    before = afford(state)[DEV_CARD]
+    state.dev_deck.clear()
+    assert not rules.can_buy_dev_card(state, 1)
+    assert afford(state)[DEV_CARD] == before, "an empty deck is in the global block"
+
+    give(state, 1, wheat=2, ore=3)
+    before = afford(state)[CITY]
+    state.cities_left[1] = 0
+    assert afford(state)[CITY] == before, "the piece supply is in the player block"
+
+
+def test_the_block_is_live_during_setup():
+    """No phase branch. Zeroing it would make 0.0 mean both "cannot afford" and "not
+    applicable", forcing the net to learn a product with a phase one-hot it already has."""
+    state = fresh(seed=1, num_players=2)
+    assert state.phase is Phase.SETUP_SETTLEMENT
+    assert afford(state)[SETTLEMENT] == [0.0, 1.0, 1.0, 0.0]
+
+
+def test_the_price_saturates_rather_than_leaving_the_unit_range():
+    state = no_harbour()
+    give(state, 1)
+    rows = afford(state)
+    assert all(row[TRADE_PRICE] == 1.0 for row in rows)
+
+    values = E.encode(state, 1)[E.LAYOUT["affordability"]]
+    assert all(isinstance(v, float) and 0.0 <= v <= 1.0 for v in values)
 
 
 # =========================================================================== #

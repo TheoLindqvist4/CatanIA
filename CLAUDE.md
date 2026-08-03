@@ -51,30 +51,40 @@ over the hand limit. `info["player"]` is the authority.
 
 ## The observation
 
-1,868 floats. `LAYOUT` maps a name to its slice.
+1,884 floats. `LAYOUT` maps a name to its slice.
 
 ```
-tiles      19 x 19   resource, number, odds, robber
-vertices   54 x 16   owner, city, harbour, pip potential, buildability
-roads      72 x  6   owner, buildability
-players     4 x 29   hands and holdings, masked for opponents
-history     4 x 12   production, spending, purchases, idleness  (the public record)
-rolls           12   how often each total has come up
-global          35   phase, last roll, bank, ruleset, bookkeeping
+tiles         19 x 19   resource, number, odds, robber
+vertices      54 x 16   owner, city, harbour, pip potential, buildability
+roads         72 x  6   owner, buildability
+players        4 x 29   hands and holdings, masked for opponents
+affordability  4 x  4   my hand against each purchase, priced through my trade rates
+history        4 x 12   production, spending, purchases, idleness  (the public record)
+rolls             12   how often each total has come up
+global            35   phase, last roll, bank, ruleset, bookkeeping
 ```
 
 **About 40% of it never changes during a game** and is cached on the `Board`
 (`encoder._static_template`). If you add a board-static feature, put it there — the per-encode
-path was 57% of training time before this existed.
+path was 57% of training time before this existed. A feature that depends on a *hand* cannot
+go there: the `Board` is shared across every clone and every observer, so a cached per-observer
+value is both stale and a leak.
+
+**Encoding a constant is worth nothing.** The cost table is identical in every state, so it
+folds into a bias in one gradient step. What the `affordability` block encodes is the
+*state-dependent* part: cards short, and what closing the gap would cost at the bank given my
+own harbours. See `docs/decisions/0022-affordability-features.md`, which is also where the
+argument for four columns rather than twenty lives.
 
 **What is NOT in it, and people assume is:**
-- **Build costs.** Nothing tells the agent what a road costs. It infers affordability only
-  from which actions are legal. This is the largest known gap.
 - **Which numbers a vertex touches.** Only an aggregate "pip potential". The structured net
   recovers some of it by averaging adjacent tile rows, but "an 8 on ore" is blended with the
-  other two tiles.
+  other two tiles. Now the largest known gap.
 - **Adjacency**, for the flat MLP. It must infer that vertex 23 neighbours 24 from
   correlations, though `topology.py` knows.
+- **Any estimate of an opponent's hand.** Deliberate — a robber steal moves a card only two
+  players ever see. The `history` block gives cumulative production and spending per player,
+  which bounds it; deriving the bound is left to the network.
 
 Changing `encoder.SIZE` invalidates every checkpoint. The interfaces check `obs_size` *and*
 `num_actions` before offering a model, because a stale one loads fine and then fails on the
@@ -149,6 +159,14 @@ whether the intervals overlap before concluding anything.
 50% *and* no regression against the fixed heuristic. The gate has already refused a completed
 run. Never copy a checkpoint into `models/` by hand.
 
+⚠️ **The gate does not run when there is no loadable champion.** `promote` takes its
+`reigning is None` branch and installs immediately — no Wilson bound, no regression check — and
+then overwrites the `beat_heuristic` baseline that every *later* candidate is compared against.
+This fires exactly when `encoder.SIZE` has changed, because the reigning champion no longer
+loads. So after any observation change the first promotion is ungated by construction: measure
+against `HeuristicAgent(noise=0)` by hand first, and say in the record that the baseline was
+reset.
+
 ---
 
 ## What has been tried and did not work
@@ -171,7 +189,7 @@ Recorded so it is not re-attempted.
 
 | | |
 |---|---|
-| Why something is the way it is | `docs/decisions/` — 21 records |
+| Why something is the way it is | `docs/decisions/` — 22 records |
 | What is done and what is next | `ROADMAP.md` |
 | Whether a change helped | `training/evaluate.py`, and use enough games |
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |

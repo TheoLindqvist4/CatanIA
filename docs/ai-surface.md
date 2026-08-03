@@ -5,8 +5,8 @@ each piece is shaped this way see
 [decision 0014](decisions/0014-ai-surface.md).
 
 ```
-catan/action_space.py    324 flat indices  +  legal_mask(state)
-catan/encoder.py         1808-float observation, perspective-rotated, hidden-info masked
+catan/action_space.py    325 flat indices  +  legal_mask(state)
+catan/encoder.py         1884-float observation, perspective-rotated, hidden-info masked
 catan/env.py             reset(seed) / step(index)
 catan/agents.py          random and greedy baselines  +  play_match
 ```
@@ -80,8 +80,9 @@ unreachable, and would look like a policy that simply never learns it.
 
 ## The observation
 
-1808 floats, always. `LAYOUT` gives the named spans and `SHAPES` the row/column counts, so a
-graph or convolutional model can reshape rather than being forced through an MLP:
+`encoder.SIZE` floats, always — 1,884 today. `LAYOUT` gives the named spans and `SHAPES` the
+row/column counts, so a graph or convolutional model can reshape rather than being forced
+through an MLP:
 
 ```python
 from catan import encoder
@@ -97,6 +98,9 @@ tiles[3]                                   # tile 4
 | `vertices` | 54 × 16 | owner, city flag, harbour, pip potential, buildability |
 | `roads` | 72 × 6 | owner, reachable-by-me |
 | `players` | 4 × 29 | hands and holdings, masked for opponents |
+| `affordability` | 4 × 4 | my hand against each purchase, priced through my trade rates |
+| `history` | 4 × 12 | the public record: production, spending, purchases, idleness |
+| `rolls` | 12 | how often each total has come up |
 | `global` | 35 | phase, last roll, bank, ruleset, turn bookkeeping |
 
 Every value sits in `[0, 1]`.

@@ -287,9 +287,9 @@ class SelfPlayCollector:
         """One batched forward pass for every game this network is deciding.
 
         The batch arrays are handed back row by row and stored as-is. Observations arrive
-        from the encoder as Python lists of 1808 floats; keeping them in that form costs
-        roughly 32 bytes a number, which at 128 environments is about a gigabyte of live
-        trajectory. The float32 rows are 7 KB each and are being built here anyway.
+        from the encoder as Python lists of `encoder.SIZE` floats; keeping them in that form
+        costs roughly 32 bytes a number, which at 128 environments is about a gigabyte of
+        live trajectory. The float32 rows are ~7 KB each and are being built here anyway.
         """
         obs_batch = np.asarray([self.obs[i] for i in indices], dtype=np.float32)
         mask_batch = np.asarray([self.info[i]["mask"] for i in indices], dtype=bool)
