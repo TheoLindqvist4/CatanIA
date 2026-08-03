@@ -113,7 +113,7 @@ def test_the_environment_stops_for_a_pre_roll_development_card():
     assert info["phase"] is Phase.ROLL
     offered = {action_space.decode(i).type for i in info["legal"]}
 
-    # Both halves of the choice. Playing a card before the roll is *optional*, so offering
+    # Both halves of the choice. Playing a Knight before the roll is *optional*, so offering
     # only the card would force a player holding a Knight to burn it every single turn.
     assert offered == {ActionType.PLAY_KNIGHT, ActionType.ROLL}
 

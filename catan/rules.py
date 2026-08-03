@@ -24,6 +24,7 @@ from catan import dice, resources
 from catan.events import Award, Event, EventKind
 from catan.actions import (
     DEV_CARD_PLAYS,
+    PRE_ROLL_PLAYS,
     Action,
     ActionType,
     build_city,
@@ -514,8 +515,9 @@ def legal_actions(state):
         return actions
 
     if state.phase is Phase.ROLL:
-        # A development card may be played *before* rolling — most usefully a Knight, to
-        # block a tile before it produces.
+        # Only a Knight may be played *before* rolling, to block a tile before it
+        # produces. See :data:`catan.actions.PRE_ROLL_PLAYS` for why the other three are
+        # held back until the dice are down.
         #
         # Playing one is **optional**, so whenever a card is available the choice to
         # decline has to be available too. Without it, a player holding a Knight is forced
@@ -524,7 +526,10 @@ def legal_actions(state):
         # When no card can be played there is no decision at all, and the list stays empty
         # so the environment rolls by itself rather than asking for a click that has only
         # one answer.
-        cards = dev_card_actions(state, player)
+        cards = [
+            action for action in dev_card_actions(state, player)
+            if action.type in PRE_ROLL_PLAYS
+        ]
         return cards + [roll()] if cards else []
 
     if state.phase is Phase.BUILD:
@@ -604,9 +609,12 @@ def apply(state, action):
     elif state.phase is Phase.ROLL:
         if action.type is ActionType.ROLL:
             roll_dice(state)
-        elif action.type in DEV_CARD_PLAYS:
+        elif action.type in PRE_ROLL_PLAYS:
             _apply_dev_card(state, player, action)
         else:
+            # Includes the three card plays that are legal this turn but not yet: the
+            # rejection has to live here as well as in `legal_actions`, because `apply` is
+            # the authority and a search or a hand-built action never consults the list.
             raise IllegalAction(f"must roll the dice before {action!r}")
     else:
         raise IllegalAction("the game is over")

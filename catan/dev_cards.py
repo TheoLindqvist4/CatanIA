@@ -11,11 +11,13 @@ Twenty-five cards in one deck, shuffled at the start of the game:
 A player's holding is a ``list[int]`` of length 5 indexed by :class:`DevCard`, matching
 how hands and costs are laid out in :mod:`catan.resources` — the encoder wants one shape.
 
-Two timing rules, both of which need their own bookkeeping:
+Three timing rules, the first two of which need their own bookkeeping:
 
 * **one card per turn** — ``state.dev_card_played_this_turn``
 * **not the turn you bought it** — ``state.dev_cards_new`` records this turn's purchases,
   and they become playable when the turn ends.
+* **only a Knight before the dice** — ``catan.actions.PRE_ROLL_PLAYS``. The Knight decides
+  which tile pays out this turn; the other three do the same thing either side of the roll.
 
 Victory Point cards are the exception to everything: they are never *played*, they simply
 count while held, and they stay hidden until they win the game.

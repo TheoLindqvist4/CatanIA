@@ -34,7 +34,7 @@ both.
 
 Buying a VP card can win the game immediately, so `BUY_DEV_CARD` checks for a winner.
 
-### A card may be played before rolling
+### A Knight may be played before rolling
 
 The rules allow playing a development card before the dice, which matters — a Knight can
 block a tile *before* it produces.
@@ -42,6 +42,19 @@ block a tile *before* it produces.
 So `legal_actions` returns the available card plays during `Phase.ROLL`, and `apply` accepts
 only those there. **`roll_dice` is still how you advance**; the pre-roll list is what may be
 done first, and is usually empty.
+
+> **Amended.** Originally all four playable cards were offered pre-roll, since the printed
+> rules permit it. Only the Knight is now, via `catan.actions.PRE_ROLL_PLAYS` — a deliberate
+> narrowing of the printed rule, applied to both `legal_actions` and `apply`.
+>
+> The Knight is the only one whose value depends on going first: it moves the robber, so it
+> changes what this roll pays out. Road Building, Year of Plenty and Monopoly have identical
+> effects either side of the dice, so pre-roll they were a choice between two orderings of
+> the same turn — noise in the action mask, and in the web interface something that read as a
+> bug to a player who knows the game. Nothing is taken away: the card is still playable that
+> same turn, just after the roll.
+>
+> The action space is unchanged, so checkpoints stay valid; only the legality mask narrowed.
 
 This keeps the dice as environment stochasticity rather than an action. The cost is that
 "`legal_actions` is empty" no longer means "time to roll" — a driver must branch on

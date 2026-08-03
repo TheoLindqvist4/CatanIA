@@ -65,6 +65,14 @@ DEV_CARD_PLAYS = frozenset({
     ActionType.PLAY_MONOPOLY,
 })
 
+#: The subset of :data:`DEV_CARD_PLAYS` allowed *before* the dice.
+#:
+#: Only the Knight. It is the one card whose value depends on coming first — it moves the
+#: robber, so playing it before the roll decides which tile pays out this turn. The other
+#: three do exactly the same thing either side of the dice, so offering them pre-roll adds
+#: a decision with no content: two legal orderings of the same turn.
+PRE_ROLL_PLAYS = frozenset({ActionType.PLAY_KNIGHT})
+
 
 #: Action types that carry a road id in ``position``.
 ROAD_ACTIONS = frozenset({ActionType.BUILD_ROAD})
@@ -126,10 +134,10 @@ def end_turn():
 def roll():
     """Roll the dice, declining to play a development card first.
 
-    Only offered when a card *could* have been played — see
-    :func:`catan.rules.legal_actions`. Playing one before the roll is optional, and without
-    an action meaning "no thank you" a player holding a Knight would be forced to burn it
-    every single turn.
+    Only offered when a Knight *could* have been played — see
+    :func:`catan.rules.legal_actions` and :data:`PRE_ROLL_PLAYS`. Playing one before the
+    roll is optional, and without an action meaning "no thank you" a player holding a Knight
+    would be forced to burn it every single turn.
     """
     return Action(ActionType.ROLL)
 

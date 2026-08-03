@@ -11,9 +11,9 @@ Three things this layer decides, none of which belong in the rules:
 **The dice are rolled for you.** :func:`catan.rules.roll_dice` is environment
 stochasticity, not a move, so ``step`` rolls automatically whenever the game is waiting on
 one — after applying an action and before returning the next observation. An agent never
-sees a state where its only option is "roll". The one exception is a development card played
-*before* the roll: those are real choices, so if any are available the environment stops and
-offers them.
+sees a state where its only option is "roll". The one exception is a Knight played *before*
+the roll: that is a real choice — it decides which tile pays out this turn — so if it is
+available the environment stops and offers it.
 
 **Whoever must act is the observer.** Catan is not strictly alternating: during a discard the
 decision belongs to whoever is over the hand limit, usually an opponent. So every step

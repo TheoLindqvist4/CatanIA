@@ -77,9 +77,9 @@ returning int `0` for a vertex touching only the desert.
 
 **The dice are rolled for you.** `roll_dice` is stochasticity, not a move, so `step` rolls
 whenever nobody has a choice — in a loop, since one roll can lead straight to the next player's
-roll. An agent never sees a state whose only option is "roll". *Except*: a development card
-played before the roll is a real choice, so if any is available the environment stops and offers
-it.
+roll. An agent never sees a state whose only option is "roll". *Except*: a Knight played before
+the roll is a real choice — it decides which tile pays out this turn — so if one is available the
+environment stops and offers it.
 
 **Whoever must act is the observer.** Catan is not strictly alternating — during a discard the
 decision belongs to whoever is over the hand limit, usually an opponent. So `info["player"]`

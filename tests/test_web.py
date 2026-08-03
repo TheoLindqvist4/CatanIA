@@ -17,7 +17,7 @@ import pytest
 import catan.topology as T
 from catan import action_space, rules
 from catan.dev_cards import DevCard
-from catan.resources import Resource
+from catan.resources import DEV_CARD_COST, Resource
 from catan.state import Phase
 
 api = pytest.importorskip("interfaces.web.api")
@@ -584,13 +584,29 @@ def test_buying_a_card_says_which_one_you_drew():
         view = game.view()
         if view["done"]:
             break
-        buy = [e["index"] for e in view["actions"]["panel"]
-               if e["type"] == "BUY_DEV_CARD"]
-        if buy:
-            game.play(buy[0])
+        panel = {e["type"]: e["index"] for e in view["actions"]["panel"]}
+
+        if "BUY_DEV_CARD" in panel:
+            game.play(panel["BUY_DEV_CARD"])
             break
+
+        # Stock the hand for the *next* turn rather than hoping a random walk affords a
+        # card. What the log names is the point of the test, and waiting for luck tied it to
+        # the exact order of the legal actions — narrowing the pre-roll list sent the walk
+        # somewhere else and the game finished with no purchase ever made.
+        #
+        # Before ending the turn, not during one: `play` recomputes what is legal, and
+        # `game.info["legal"]` is a snapshot that a mid-turn hand would contradict.
+        # Production only ever adds to a hand, so the cost survives the roll; if a 7 steals
+        # part of it, the next turn stocks it again.
+        if "END_TURN" in panel:
+            game.state.hands[api.HUMAN] = list(DEV_CARD_COST)
+            game.play(panel["END_TURN"])
+            continue
+
+        # Whatever is left is a discard or a robber move, where the choice does not matter.
         choices = [i for group in view["actions"]["board"].values() for i in group.values()]
-        choices += [e["index"] for e in view["actions"]["panel"]]
+        choices += list(panel.values())
         if not choices:
             break
         game.play(rng.choice(choices))

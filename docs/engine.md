@@ -293,8 +293,10 @@ A 25-card deck: 14 Knight, 5 Victory Point, 2 each of Road Building, Year of Ple
 Monopoly. Buying costs sheep + wheat + ore and draws the top card.
 
 Two timing rules: **one card per turn**, and **not the turn you bought it**
-(`state.dev_cards_new` tracks this turn's purchases). A card may be played **before rolling**,
-which is how a Knight blocks a tile before it produces.
+(`state.dev_cards_new` tracks this turn's purchases). A **Knight** may be played **before
+rolling**, which is how it blocks a tile before that tile produces; the other three wait for
+the dice, because they do the same thing either side of them
+(`catan.actions.PRE_ROLL_PLAYS`).
 
 | card | effect |
 |---|---|

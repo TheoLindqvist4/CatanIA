@@ -212,8 +212,10 @@ almost always zero.
       [decision 0010](docs/decisions/0010-harbour-placement.md). 280 distinct position sets,
       gaps always 3 or 4 roads so they never cluster.
 - [x] **Development cards**: the 25-card deck, buying, and both timing rules — one per turn,
-      and not the turn you bought it. All five cards, including play *before* rolling, which is
-      how a Knight blocks a tile before it produces. Victory Point cards are never played: they
+      and not the turn you bought it. All five cards. Only a Knight may be played *before*
+      rolling, which is how it blocks a tile before that tile produces; the other three have
+      the same effect either side of the dice, so they wait for the roll
+      (`catan.actions.PRE_ROLL_PLAYS`). Victory Point cards are never played: they
       count while held and stay hidden, so `public_victory_points` exists alongside
       `victory_points` for what an opponent can see.
       → [decision 0012](docs/decisions/0012-development-card-modelling.md)

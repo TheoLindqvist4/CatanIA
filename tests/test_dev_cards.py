@@ -220,8 +220,8 @@ def test_the_one_card_limit_resets_next_turn():
     assert state.dev_card_played_this_turn is False
 
 
-def test_a_card_may_be_played_before_rolling():
-    """Most usefully a Knight, to block a tile before it produces."""
+def test_a_knight_may_be_played_before_rolling():
+    """Which is the point of the pre-roll stop: block a tile before it produces."""
     state = fresh(seed=1)
     complete_setup(state)
     assert state.phase is Phase.ROLL
@@ -260,7 +260,7 @@ def test_a_knight_played_after_rolling_returns_to_build():
     assert state.phase is Phase.BUILD
 
 
-def test_only_a_dev_card_may_be_played_before_rolling():
+def test_nothing_but_a_knight_may_be_played_before_rolling():
     state = fresh(seed=1)
     complete_setup(state)
     enough_for_everything(state, state.current_player)
@@ -734,18 +734,26 @@ def _waiting_to_roll(card, seed=9):
     return env
 
 
-@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
-def test_you_can_always_decline_and_just_roll(card):
-    """Every playable card, not only the Knight."""
-    env = _waiting_to_roll(card)
+#: Everything playable that must wait for the dice. See `catan.actions.PRE_ROLL_PLAYS`.
+POST_ROLL_ONLY = tuple(card for card in PLAYABLE if card is not DevCard.KNIGHT)
+
+#: One concrete play per card, for driving `rules.apply` directly.
+A_PLAY_OF = {
+    DevCard.KNIGHT: play_knight,
+    DevCard.ROAD_BUILDING: play_road_building,
+    DevCard.YEAR_OF_PLENTY: lambda: play_year_of_plenty(Resource.WOOD, Resource.BRICK),
+    DevCard.MONOPOLY: lambda: play_monopoly(Resource.WOOD),
+}
+
+
+def test_you_can_always_decline_and_just_roll():
+    env = _waiting_to_roll(DevCard.KNIGHT)
     offered = {action_space.decode(i).type for i in action_space.legal_indices(env.state)}
-    assert ActionType.ROLL in offered, f"{card.name} cannot be declined"
-    assert len(offered) == 2, offered
+    assert offered == {ActionType.PLAY_KNIGHT, ActionType.ROLL}, offered
 
 
-@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
-def test_declining_rolls_the_dice_and_keeps_the_card(card):
-    env = _waiting_to_roll(card)
+def test_declining_rolls_the_dice_and_keeps_the_card():
+    env = _waiting_to_roll(DevCard.KNIGHT)
     _, info = env._observe()
     index = next(i for i in info["legal"]
                  if action_space.decode(i).type is ActionType.ROLL)
@@ -753,7 +761,7 @@ def test_declining_rolls_the_dice_and_keeps_the_card(card):
     env.step(index)
     state = env.state
     assert state.last_roll is not None, "declining did not roll"
-    assert state.dev_cards[1][card] == 1, "the card was consumed anyway"
+    assert state.dev_cards[1][DevCard.KNIGHT] == 1, "the card was consumed anyway"
     assert not state.dev_card_played_this_turn
 
 
@@ -764,16 +772,59 @@ def test_with_no_card_there_is_no_decision_and_the_env_rolls_itself():
     assert action_space.legal_indices(env.state) == []
 
 
-@pytest.mark.parametrize("card", PLAYABLE, ids=lambda c: c.name.lower())
-def test_playing_it_before_the_roll_still_works(card):
+def test_playing_it_before_the_roll_still_works():
     """The fix must not have removed the reason the stop exists."""
-    env = _waiting_to_roll(card)
+    env = _waiting_to_roll(DevCard.KNIGHT)
     _, info = env._observe()
     index = next(i for i in info["legal"]
                  if action_space.decode(i).type is not ActionType.ROLL)
 
     env.step(index)
     assert env.state.dev_card_played_this_turn or env.state.phase is Phase.MOVE_ROBBER
+
+
+# =========================================================================== #
+# ONLY THE KNIGHT MAY GO BEFORE THE DICE                                      #
+# =========================================================================== #
+#
+# The Knight decides which tile pays out this turn, so playing it first is a real choice.
+# The other three do the same thing either side of the dice, so pre-roll they were a
+# decision with no content — and one the interface offered, which read as a bug.
+
+@pytest.mark.parametrize("card", POST_ROLL_ONLY, ids=lambda c: c.name.lower())
+def test_a_card_that_must_wait_is_not_offered_before_the_roll(card):
+    """And with nothing else to decide, the environment rolls by itself."""
+    env = _waiting_to_roll(card)
+    assert action_space.legal_indices(env.state) == []
+
+
+@pytest.mark.parametrize("card", POST_ROLL_ONLY, ids=lambda c: c.name.lower())
+def test_a_card_that_must_wait_is_refused_before_the_roll(card):
+    """`apply` is the authority: a search or a hand-built action never consults the list."""
+    env = _waiting_to_roll(card)
+    state = env.state
+    player = state.current_player
+
+    with pytest.raises(IllegalAction):
+        rules.apply(state, A_PLAY_OF[card]())
+
+    assert state.dev_cards[player][card] == 1, "the card was consumed anyway"
+    assert not state.dev_card_played_this_turn
+    assert state.phase is Phase.ROLL
+
+
+@pytest.mark.parametrize("card", POST_ROLL_ONLY, ids=lambda c: c.name.lower())
+def test_the_same_card_plays_normally_once_the_dice_are_down(card):
+    """Held back, not taken away — the block must not cost the turn its card."""
+    env = _waiting_to_roll(card)
+    state = env.state
+    roll_to_build(state)
+    # after the hand is settled, so a full hand cannot trigger a discard on the way
+    enough_for_everything(state, state.current_player)
+
+    assert A_PLAY_OF[card]() in rules.legal_actions(state)
+    rules.apply(state, A_PLAY_OF[card]())
+    assert state.dev_card_played_this_turn
 
 
 def test_a_turn_can_be_played_through_while_holding_a_card():
