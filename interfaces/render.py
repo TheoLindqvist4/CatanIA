@@ -82,6 +82,20 @@ SPOT_SCALE = 0.26
 ROAD_LENGTH_SCALE = 0.80      # of one hex edge
 ROBBER_SCALE = 0.30
 
+#: How far below a tile's centre the number token belongs, as a fraction of one hex height.
+#:
+#: Not zero, and not guessed. Every resource tile has a blank panel punched clean out of the
+#: art for the token to sit in — a genuine hole, alpha 0, not a light patch — and the artist
+#: put it *below* the middle to leave room for the wheat sheaf or the tree above it. In the
+#: 300x345 assets that hole spans y 163..274, so its centre is at 219/345 = 0.6348 of the
+#: height, which is 0.135 of a height below the centre of the hex.
+#:
+#: Measured from the assets rather than taken by eye; the eye had it at 0.06, which put the
+#: token high enough to clip the art above the panel.
+#: ``tests/test_render.py::test_the_number_token_is_centred_in_the_blank_panel`` re-measures
+#: them and fails if the art and this number ever disagree.
+NUMBER_OFFSET = 0.135
+
 BACKGROUND = (36, 78, 120)     # sea
 _cache = {}
 
@@ -231,7 +245,8 @@ def _draw_tiles(canvas, geometry, state):
         token = _fitted(_load("numbers", f"{number}.png"),
                         geometry.hex_width * NUMBER_SCALE)
         centre = geometry.tile(tile)
-        _paste(canvas, token, (centre[0], centre[1] + geometry.hex_height * 0.06))
+        _paste(canvas, token,
+               (centre[0], centre[1] + geometry.hex_height * NUMBER_OFFSET))
 
 
 def _draw_harbours(canvas, draw, geometry, state, show_labels):

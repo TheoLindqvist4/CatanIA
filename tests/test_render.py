@@ -140,6 +140,88 @@ def test_every_harbour_kind_has_a_label():
     assert set(render_module.HARBOUR_LABELS) == set(Resource) | {GENERIC_HARBOUR}
 
 
+# --------------------------------------------------------------------------- #
+# The blank panel the number token goes in                                    #
+# --------------------------------------------------------------------------- #
+
+def _longest_transparent_run(alpha):
+    """``(start, stop)`` of the longest run of fully transparent pixels in ``alpha``.
+
+    A run, not a bounding box: an anti-aliased hex corner contributes a pixel or two of
+    transparency at the far ends of a scanline, which a bounding box would swallow whole.
+    """
+    best = longest = start = run = 0
+    for index, value in enumerate(bytes(alpha) + b"\xff"):
+        if value == 0:
+            run = run + 1 if run else 1
+            if run == 1:
+                start = index
+            if run > longest:
+                longest, best = run, start
+        else:
+            run = 0
+    return best, best + longest
+
+
+def _blank_panel(image):
+    """Where the tile art leaves a hole for the number token, as fractions of the asset.
+
+    Returns ``(centre_x, centre_y, width, height)``, all relative to the image. The panel is
+    a hole punched clean through the art — alpha 0 — so it can be found rather than assumed:
+    scan the centre column for it, then the row through its middle. Both of those lines run
+    right across the hexagon, so the only transparency on them is the panel itself.
+    """
+    width, height = image.size
+    alpha = image.getchannel("A")
+    column = alpha.crop((width // 2, 0, width // 2 + 1, height)).tobytes()
+    top, bottom = _longest_transparent_run(column)
+    middle = (top + bottom) // 2
+    left, right = _longest_transparent_run(
+        alpha.crop((0, middle, width, middle + 1)).tobytes())
+    return ((left + right) / 2 / width, (top + bottom) / 2 / height,
+            (right - left) / width, (bottom - top) / height)
+
+
+def test_the_number_token_is_centred_in_the_blank_panel():
+    """Every resource tile has a panel cut out of the art for its number, and it is *not*
+    in the middle of the hex — the sheaf or the tree is drawn above it. The offset is
+    measured from the assets here, so the art and the renderer cannot drift apart. Taken by
+    eye it was 0.06, which put the token high enough to clip the art above the panel."""
+    from PIL import Image
+
+    tiles = [name for resource, name in render_module.TILE_FILES.items()
+             if resource is not None]          # the desert shows no token, so has no panel
+    assert tiles
+
+    for name in tiles:
+        image = Image.open(render_module.IMAGES / "tiles" / name).convert("RGBA")
+        centre_x, centre_y, panel_w, panel_h = _blank_panel(image)
+        assert panel_w > 0.2 and panel_h > 0.2, f"no panel found in {name}"
+        # Horizontally the panel is simply centred, so only the vertical offset is needed.
+        assert centre_x == pytest.approx(0.5, abs=0.01), name
+        assert centre_y - 0.5 == pytest.approx(render_module.NUMBER_OFFSET, abs=0.005), name
+
+
+def test_the_number_token_fits_inside_the_blank_panel():
+    """Centring it is only worth anything if it also sits within the panel rather than
+    spilling over the art around it."""
+    from PIL import Image
+
+    tile = Image.open(render_module.IMAGES / "tiles"
+                      / render_module.TILE_FILES[Resource.WHEAT]).convert("RGBA")
+    _, _, panel_w, panel_h = _blank_panel(tile)
+    # In hex widths and heights, which is what both renderers scale everything by.
+    panel = (panel_w, panel_h * tile.height / tile.width * render_module.WIDTH_OVER_HEIGHT)
+
+    for number in list(range(2, 7)) + list(range(8, 13)):
+        token = Image.open(render_module.IMAGES / "numbers" / f"{number}.png").convert("RGBA")
+        box = token.split()[3].getbbox()         # the ink, not the transparent canvas
+        drawn = ((box[2] - box[0]) / token.width * render_module.NUMBER_SCALE,
+                 (box[3] - box[1]) / token.height * render_module.NUMBER_SCALE)
+        assert drawn[0] <= panel[0], f"{number}.png is wider than the panel"
+        assert drawn[1] <= panel[1], f"{number}.png is taller than the panel"
+
+
 # =========================================================================== #
 # RENDERING                                                                   #
 # =========================================================================== #

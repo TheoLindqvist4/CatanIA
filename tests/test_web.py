@@ -28,6 +28,11 @@ def fresh_game(seed=5, **kwargs):
     return api.Game(seed=seed, **kwargs)
 
 
+def all_options(view):
+    board = [i for targets in view["actions"]["board"].values() for i in targets.values()]
+    return board + [entry["index"] for entry in view["actions"]["panel"]]
+
+
 def play_out(game, limit=4000, rng=None):
     """Click through a game the way the client would, returning the final view."""
     rng = rng or random.Random(0)
@@ -35,9 +40,28 @@ def play_out(game, limit=4000, rng=None):
     for _ in range(limit):
         if view["done"]:
             break
-        board = [i for targets in view["actions"]["board"].values() for i in targets.values()]
-        panel = [entry["index"] for entry in view["actions"]["panel"]]
-        options = board + panel
+        options = all_options(view)
+        assert options, f"nothing to do in {view['phase']}"
+        view = game.play(rng.choice(options))
+    return view
+
+
+def watch_out(game, limit=9000, rng=None):
+    """The same, but for a paced game: watch the opponent a move at a time.
+
+    Exactly what the browser does, minus the second between moves. It draws on the same
+    ``rng`` in the same order as :func:`play_out`, since ``advance`` makes no choice of its
+    own — so the two produce the same game from the same seed.
+    """
+    rng = rng or random.Random(0)
+    view = game.view()
+    for _ in range(limit):
+        if view["done"]:
+            break
+        if view["awaitingOpponent"]:
+            view = game.advance()
+            continue
+        options = all_options(view)
         assert options, f"nothing to do in {view['phase']}"
         view = game.play(rng.choice(options))
     return view
@@ -153,7 +177,7 @@ def test_the_view_carries_what_a_player_needs_to_see():
     view = fresh_game().view()
     for key in ("lastRoll", "turn", "phase", "phaseHint", "bank", "devDeck",
                 "robber", "board", "pieces", "players", "actions", "log",
-                "victoryTarget", "handLimit", "winner", "done"):
+                "victoryTarget", "handLimit", "winner", "done", "awaitingOpponent"):
         assert key in view, f"missing {key}"
     assert len(view["board"]["tiles"]) == T.NUM_TILES
     assert len(view["board"]["harbours"]) == 9
@@ -288,6 +312,117 @@ def test_an_unknown_opponent_or_ruleset_is_refused():
 
 
 # =========================================================================== #
+# WATCHING THE OPPONENT                                                       #
+# =========================================================================== #
+#
+# The engine decides a whole turn in well under a millisecond, so a reply played inside
+# `play` arrives as one repaint: the board is simply different afterwards and the player
+# never sees the bot place a settlement, move the robber or play a card. A paced game hands
+# the decisions back one at a time instead, and the client spaces them out.
+
+
+def paced_game(seed=5, **kwargs):
+    return api.Game(seed=seed, paced=True, **kwargs)
+
+
+def until_the_opponent_owes_a_move(game, rng, limit=200):
+    """Play the human's moves until the opponent has one outstanding."""
+    view = game.view()
+    for _ in range(limit):
+        if view["done"] or view["awaitingOpponent"]:
+            return view
+        view = game.play(rng.choice(all_options(view)))
+    pytest.fail("the opponent was never owed a move")
+
+
+def test_the_view_says_when_the_opponent_owes_a_move():
+    game = paced_game()
+    assert game.view()["awaitingOpponent"] is False, "the human places first"
+
+    view = until_the_opponent_owes_a_move(game, random.Random(0))
+    assert view["awaitingOpponent"] is True
+    assert view["yourTurn"] is False
+    assert view["currentPlayer"] != api.HUMAN
+    assert not all_options(view), "nothing may be offered while it is not your move"
+
+
+def test_advancing_plays_exactly_one_of_the_opponents_decisions():
+    """One per call is the whole point: it is what lets the client draw each of them, and
+    what keeps what is drawn in the order it happened."""
+    game = paced_game()
+    until_the_opponent_owes_a_move(game, random.Random(0))
+
+    asked = []
+    agent = game.opponent
+
+    def counting(observation, info):
+        asked.append(info["player"])
+        return agent(observation, info)
+
+    game.opponent = counting
+    game.advance()
+    assert len(asked) == 1
+    assert asked == [3 - api.HUMAN]
+
+
+def test_advancing_when_it_is_your_move_does_nothing():
+    """The client calls it without first working out whether it should — that decision
+    belongs to the server, which has the engine's `info`."""
+    game = paced_game()
+    before = game.view()
+    assert before["awaitingOpponent"] is False
+    assert game.advance() == before
+
+
+def test_advancing_after_the_game_is_over_does_nothing():
+    game = paced_game(seed=11)
+    view = watch_out(game)
+    if not view["done"]:
+        pytest.skip("game did not finish inside the step budget")
+    assert game.advance() == view
+
+
+def test_an_unpaced_game_still_gets_the_whole_reply_in_one_call():
+    """The default, and what every test, benchmark and script driving api.Game relies on:
+    nothing calls `advance`, so pacing them would leave the opponent stuck."""
+    game = fresh_game()
+    rng = random.Random(0)
+    view = game.view()
+    for _ in range(60):
+        if view["done"]:
+            break
+        assert view["awaitingOpponent"] is False, "the opponent was left mid-reply"
+        view = game.play(rng.choice(all_options(view)))
+
+
+def test_pacing_changes_nothing_about_the_game_itself():
+    """It is presentation and only presentation. The same seed and the same clicks must
+    produce the same game whether the opponent's reply arrives in one call or a move at a
+    time — otherwise a game played in the browser is not the game the recording replays."""
+    straight = play_out(fresh_game(seed=21), rng=random.Random(1))
+    paced = watch_out(paced_game(seed=21), rng=random.Random(1))
+    assert paced["log"] == straight["log"]
+    assert paced["winner"] == straight["winner"]
+    assert paced["turn"] == straight["turn"]
+
+
+def test_a_paced_game_records_the_same_moves(tmp_path, monkeypatch):
+    """A recording is the seed plus the moves, and it is what a real game becomes training
+    data from. Pacing must not drop, duplicate or reorder a decision in it."""
+    from interfaces.web import recorder
+
+    monkeypatch.setattr(recorder, "GAMES", tmp_path)
+    straight = fresh_game(seed=21, record_game=True)
+    play_out(straight, rng=random.Random(1))
+    paced = paced_game(seed=21, record_game=True)
+    watch_out(paced, rng=random.Random(1))
+
+    assert paced.recorder.moves == straight.recorder.moves
+    assert paced.recorder.result == straight.recorder.result
+    assert recorder.verify(paced.recorder.path) is not False
+
+
+# =========================================================================== #
 # GEOMETRY                                                                    #
 # =========================================================================== #
 
@@ -322,6 +457,33 @@ def test_road_geometry_names_its_endpoints():
 
 def test_geometry_is_json_serialisable():
     json.dumps(api.geometry())
+
+
+def test_the_offered_opponents_are_exactly_the_ones_that_work():
+    """The page builds its dropdown from this, so anything listed must be startable.
+
+    It used to be a hardcoded list in index.html, which offered `learned` whether or not a
+    champion had loaded — and after an observation change it has not, so the option was
+    clickable and answered with a 400.
+    """
+    offered = api.geometry()["opponents"]
+    assert offered, "nothing to choose from"
+    assert [entry["name"] for entry in offered] == [
+        name for name in api.OPPONENT_LABELS if name in api.OPPONENTS
+    ]
+    for entry in offered:
+        assert entry["label"], entry["name"]
+        api.Game(opponent=entry["name"], seed=1)          # would raise if unknown
+
+    defaults = [entry["name"] for entry in offered if entry["default"]]
+    assert defaults == [api.DEFAULT_OPPONENT], "exactly one option must start selected"
+
+
+def test_an_opponent_that_did_not_load_is_not_offered(monkeypatch):
+    """The case this exists for: a champion trained against a different encoder."""
+    monkeypatch.setitem(api.OPPONENT_LABELS, "learned", "Learned (strongest)")
+    monkeypatch.delitem(api.OPPONENTS, "learned", raising=False)
+    assert "learned" not in [entry["name"] for entry in api.opponents()]
 
 
 # =========================================================================== #
@@ -372,23 +534,35 @@ def test_static_files_are_served(server, path, content_type):
 
 
 def test_a_whole_game_can_be_played_over_http(server):
+    """Exactly the client's loop: play a move, then watch the opponent's replies arrive one
+    at a time. A game reached over HTTP is paced, because a person is watching it."""
     _, body, _ = request(server, "/api/game", {"seed": 8})
     view = json.loads(body)
     game_id = view["gameId"]
     rng = random.Random(8)
+    advances = 0
 
-    for _ in range(150):
+    for _ in range(400):
         if view["done"]:
             break
-        board = [i for t in view["actions"]["board"].values() for i in t.values()]
-        panel = [entry["index"] for entry in view["actions"]["panel"]]
-        _, body, _ = request(server, f"/api/game/{game_id}/action",
-                             {"index": rng.choice(board + panel)})
+        if view["awaitingOpponent"]:
+            _, body, _ = request(server, f"/api/game/{game_id}/advance", {})
+            advances += 1
+        else:
+            _, body, _ = request(server, f"/api/game/{game_id}/action",
+                                 {"index": rng.choice(all_options(view))})
         view = json.loads(body)
 
+    assert advances, "the opponent never moved"
     assert view["log"]
     _, body, _ = request(server, f"/api/game/{game_id}")
     assert json.loads(body)["gameId"] == game_id
+
+
+def test_advancing_a_missing_game_is_a_404(server):
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        request(server, "/api/game/999999/advance", {})
+    assert caught.value.code == 404
 
 
 def test_the_geometry_endpoint_works(server):
@@ -481,6 +655,17 @@ def test_sprite_scales_come_from_the_renderer():
     assert scales["robber"] == render.ROBBER_SCALE
 
 
+def test_where_the_number_token_goes_comes_from_the_renderer():
+    """The tile art leaves a blank panel for the token, and it is not in the middle of the
+    hex. Both renderers need that figure, so it is served rather than written twice — the
+    browser and a saved PNG putting a number in different places is precisely the drift this
+    interface exists to remove. ``tests/test_render.py`` measures it against the art."""
+    from interfaces import render
+
+    assert api.geometry()["art"]["offsets"]["number"] == render.NUMBER_OFFSET
+    assert "art.offsets" in client_code(), "the client must be told, not guess"
+
+
 def test_every_asset_the_client_can_ask_for_exists():
     """The client builds image URLs from the served mapping, so every combination it can
     produce has to be a real file. A missing one is an invisible piece, not an error."""
@@ -506,30 +691,46 @@ def test_every_asset_the_client_can_ask_for_exists():
     assert not missing, missing
 
 
+APP_JS = (pathlib.Path(__file__).resolve().parents[1]
+          / "interfaces" / "web" / "static" / "app.js")
+
+
+def client_code():
+    """app.js with its comments stripped.
+
+    Comments may name anything freely — that is where the explanation belongs, and removing
+    them is what makes these tests about the behaviour rather than about the prose.
+    """
+    return "\n".join(
+        line for line in APP_JS.read_text(encoding="utf-8").splitlines()
+        if not line.strip().startswith(("//", "/*", "*"))
+    )
+
+
 def test_the_client_does_not_hard_code_the_art_mapping():
     """If the JavaScript ever writes "weat" or a colour name in *code*, the mapping has
-    been duplicated and the two copies will drift. Comments may name them freely — that is
-    where the explanation belongs, and stripping them is what makes this test about the
-    behaviour rather than about the prose."""
-    client = (pathlib.Path(__file__).resolve().parents[1]
-              / "interfaces" / "web" / "static" / "app.js").read_text(encoding="utf-8")
-    code = [
-        line for line in client.splitlines()
-        if not line.strip().startswith(("//", "/*", "*"))
-    ]
-    code = "\n".join(code)
+    been duplicated and the two copies will drift."""
     for literal in ('"weat"', "'weat'", "weat.png", "stone.png",
                     '"red_road', '"blue_road', "settlements/red", "cities/blue"):
-        assert literal not in code, f"{literal} is hard-coded in app.js"
+        assert literal not in client_code(), f"{literal} is hard-coded in app.js"
 
 
 def test_the_client_has_no_stray_control_characters():
     """A ``\b`` written inside a template literal is a backspace, not a word boundary. It
     produces a pattern that matches nothing while reading as though it should work."""
-    client = (pathlib.Path(__file__).resolve().parents[1]
-              / "interfaces" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    client = APP_JS.read_text(encoding="utf-8")
     for bad in ("\b", "\f", "\v", "\x00"):
         assert bad not in client, f"control character {bad!r} in app.js"
+
+
+def test_the_client_spaces_the_opponents_moves_a_second_apart():
+    """Without a delay the opponent's whole reply is one repaint and the player never sees
+    what it did. This is the interface's pacing and nothing else's — training never loads
+    app.js, so no agent is ever made to wait for it."""
+    code = client_code()
+    assert "OPPONENT_MOVE_MS = 1000" in code
+    assert "/advance" in code, "the client must ask for one move at a time"
+    assert "awaitingOpponent" in code, "and let the server say when one is owed"
 
 
 # =========================================================================== #

@@ -15,10 +15,11 @@ Routes
 ``GET  /``                        the page
 ``GET  /app/<file>``              client code
 ``GET  /images/<path>``           board art
-``GET  /api/geometry``            board coordinates — static, fetched once
+``GET  /api/geometry``            board coordinates, art and the opponent list — fetched once
 ``POST /api/game``                start one: ``{opponent, rules, seed}``
 ``GET  /api/game/<id>``           the current position, as the human may see it
 ``POST /api/game/<id>/action``    play: ``{"index": n}``
+``POST /api/game/<id>/advance``   play one of the opponent's moves, so it can be watched
 """
 
 import json
@@ -92,8 +93,10 @@ class Handler(BaseHTTPRequestHandler):
                     seed=body.get("seed"),
                     # A game reached over HTTP is one a person is playing, and this is the
                     # only place that knows it. Everything else driving api.Game — tests,
-                    # benchmarks, scripts — leaves no trace in games/.
+                    # benchmarks, scripts — leaves no trace in games/, and wants the
+                    # opponent's whole reply in one call rather than a move at a time.
                     record_game=True,
+                    paced=True,
                 )
                 return self._send_json(game.view())
             if path.startswith("/api/game/") and path.endswith("/action"):
@@ -102,6 +105,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(index, int):
                     raise ValueError("expected an integer 'index'")
                 return self._send_json(GAMES.get(game_id).play(index))
+            if path.startswith("/api/game/") and path.endswith("/advance"):
+                # One opponent decision, so the client can space them out and the player
+                # can see what the bot did rather than only what it left behind.
+                game_id = path[len("/api/game/"):-len("/advance")]
+                return self._send_json(GAMES.get(game_id).advance())
         except KeyError as error:
             return self._send_json({"error": str(error)}, status=404)
         except ValueError as error:

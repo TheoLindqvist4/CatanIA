@@ -11,14 +11,9 @@
     <h1>CatanIA</h1>
     <div class="controls">
       <label>Opponent
-        <select id="opponent">
-          <option value="learned">Learned (strongest)</option>
-          <option value="hard">Hard</option>
-          <option value="medium">Medium</option>
-          <option value="easy">Easy</option>
-          <option value="greedy">Greedy (weak)</option>
-          <option value="random">Random</option>
-        </select>
+        <!-- Filled from /api/geometry: which opponents exist depends on whether a trained
+             champion loads, so listing them here would offer one the server would refuse. -->
+        <select id="opponent"></select>
       </label>
       <label>Rules
         <select id="rules">

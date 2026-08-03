@@ -71,10 +71,39 @@ def _register_learned():
 
 _register_learned()
 
-#: The strongest opponent available. The trained policy beats the heuristic 74.4% of the
-#: time, so it is the default — but it ships as a file under ``checkpoints/``, which is not
-#: in git, so a fresh clone (or one without PyTorch) falls back to the heuristic.
+#: The strongest opponent available. The trained policy beats the heuristic comfortably, so
+#: it is the default — but it ships as a file under ``models/``, and a champion trained
+#: against a different ``encoder.SIZE`` will not load, so a fresh clone (or one without
+#: PyTorch, or one mid-way through an observation change) falls back to the heuristic.
 DEFAULT_OPPONENT = "learned" if "learned" in OPPONENTS else "hard"
+
+#: How each opponent is named in the interface, in the order it should be offered.
+#:
+#: Here rather than in the page, because *which* opponents exist is decided at import: a
+#: champion whose observation no longer matches the encoder does not load, and an option
+#: hardcoded in the HTML would still be clickable and would fail with a 400. The page asks
+#: what is available; it does not assume.
+OPPONENT_LABELS = {
+    "learned": "Learned (strongest)",
+    "hard": "Hard",
+    "medium": "Medium",
+    "easy": "Easy",
+    "greedy": "Greedy (weak)",
+    "random": "Random",
+}
+
+
+def opponents():
+    """The selectable opponents, as the client should list them."""
+    return [
+        {
+            "name": name,
+            "label": OPPONENT_LABELS[name],
+            "default": name == DEFAULT_OPPONENT,
+        }
+        for name in OPPONENT_LABELS
+        if name in OPPONENTS
+    ]
 
 #: Board art, keyed the way the client asks for it.
 TILE_IMAGES = {
@@ -117,12 +146,17 @@ def _new_card(before, after):
 
 
 class Game:
-    """One game in progress, plus the log the player has not seen yet."""
+    """One game in progress, plus the log the player has not seen yet.
+
+    Args:
+        paced: hand the opponent's decisions back one at a time instead of playing its
+            whole reply inside :meth:`play`. See :meth:`advance`.
+    """
 
     _ids = itertools.count(1)
 
     def __init__(self, opponent=None, rules_name="ranked1v1", seed=None,
-                 record_game=False):
+                 record_game=False, paced=False):
         opponent = DEFAULT_OPPONENT if opponent is None else opponent
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
@@ -135,6 +169,11 @@ class Game:
         self.env = CatanEnv(num_players=2, ruleset=RULESETS[rules_name])
         self.opponent = OPPONENTS[opponent](seed)
         self.log = []
+        self.paced = paced
+        # Off by default for the same reason recording is: a paced game is one somebody is
+        # *watching*, and only the HTTP layer knows that. Tests, benchmarks and scripts want
+        # the opponent's whole reply in one call, and none of them would ever call
+        # :meth:`advance`, so pacing them would simply leave the opponent stuck.
 
         # A seed is chosen here rather than left to the engine. `reset(seed=None)` seeds
         # from the OS and the value is then unknowable, which would make the recording
@@ -153,7 +192,8 @@ class Game:
         # so it is the one that turns this on.
 
         self._record(self.info)
-        self._let_opponent_play()
+        if not paced:
+            self._let_opponent_play()
 
     # ------------------------------------------------------------------ #
 
@@ -177,6 +217,35 @@ class Game:
                 line = f"{line}: {drew}"
             self.log.append(line)
 
+    @property
+    def awaiting_opponent(self):
+        """Whether a decision is outstanding and it is not the human's.
+
+        ``info["player"]`` is the authority rather than the turn order: the game is not
+        strictly alternating, and during a discard the decision belongs to whoever is over
+        the hand limit.
+        """
+        return not self.info["done"] and self.info["player"] != HUMAN
+
+    def _opponent_move(self):
+        """Play exactly one of the opponent's decisions.
+
+        Returns:
+            bool: whether there was one to play. ``False`` means the game is over or it is
+            the human's move, so a caller can loop on it without a separate check.
+        """
+        if not self.awaiting_opponent:
+            return False
+        observation = self.env.observe(self.info["player"])
+        action = self.opponent(observation, self.info)
+        if self.recorder:
+            self.recorder.record(self.info, action)
+        _, _, _, _, self.info = self.env.step(action)
+        self._record(self.info)
+        if self.info["done"] and self.recorder:
+            self.recorder.finish(self.info)
+        return True
+
     def _let_opponent_play(self):
         """Play the opponent's decisions until it is the human's turn again.
 
@@ -184,20 +253,32 @@ class Game:
         would otherwise hang the request instead of failing.
         """
         for _ in range(10_000):
-            if self.info["done"] or self.info["player"] == HUMAN:
+            if not self._opponent_move():
                 return
-            observation = self.env.observe(self.info["player"])
-            action = self.opponent(observation, self.info)
-            if self.recorder:
-                self.recorder.record(self.info, action)
-            _, _, _, _, self.info = self.env.step(action)
-            self._record(self.info)
-            if self.info["done"] and self.recorder:
-                self.recorder.finish(self.info)
         raise RuntimeError("the opponent would not stop moving")
+
+    def advance(self):
+        """Play one of the opponent's decisions and return the position after it.
+
+        This is what makes the opponent watchable. Its whole reply — four setup placements,
+        or a roll and a robber move and three builds — arrives from the engine in under a
+        millisecond, so playing it all inside :meth:`play` means the board simply looks
+        different afterwards and the player never sees what happened. One decision per call
+        lets the client draw each of them, in the order they were actually made.
+
+        A no-op when it is the human's move or the game is over, so the client can call it
+        without first deciding whether it should — that decision is made here, with the
+        engine's ``info``, and not in the browser.
+        """
+        if self._opponent_move() and self.recorder:
+            self.recorder.save()
+        return self.view()
 
     def play(self, index):
         """Apply the human's action, then let the opponent reply.
+
+        Unless this game is :attr:`paced`, in which case the reply is left for
+        :meth:`advance` to hand back a decision at a time.
 
         Raises:
             ValueError: if it is not the human's turn, or the action is not legal. The
@@ -218,7 +299,8 @@ class Game:
         self._record(self.info, drew=_new_card(before, self.state.dev_cards[HUMAN]))
         if self.info["done"] and self.recorder:
             self.recorder.finish(self.info)
-        self._let_opponent_play()
+        if not self.paced:
+            self._let_opponent_play()
         if self.recorder:
             self.recorder.save()
         return self.view()
@@ -232,13 +314,18 @@ class Game:
 # --------------------------------------------------------------------------- #
 
 def geometry(hex_width=110):
-    """Pixel coordinates for every tile, vertex and road.
+    """Everything the client needs once and then never again.
 
-    The same lattice :mod:`interfaces.render` maps to pixels for the PNG, so the browser and
-    the image agree by construction rather than by two people writing the same layout twice.
+    Pixel coordinates for every tile, vertex and road — the same lattice
+    :mod:`interfaces.render` maps to pixels for the PNG, so the browser and the image agree
+    by construction rather than by two people writing the same layout twice — plus the art
+    names, the sizes both renderers draw at, and which opponents exist.
     """
     plan = Geometry(hex_width=hex_width)
     return {
+        # Not board layout, but static and fetched in the same breath, which saves the page
+        # a second round trip before it can offer a New game button that works.
+        "opponents": opponents(),
         # Which picture goes with which name. Shared with interfaces/render.py's PNG
         # renderer, so the board on screen and the board in a saved image use one asset set.
         "art": {
@@ -256,6 +343,12 @@ def geometry(hex_width=110):
                 "spot": render.SPOT_SCALE,
                 "roadLength": render.ROAD_LENGTH_SCALE,
                 "robber": render.ROBBER_SCALE,
+            },
+            # Not sizes but placements, in fractions of one hex height below a tile's
+            # centre. The number token has one because the art leaves a blank panel for it
+            # that is not in the middle of the hex — see render.NUMBER_OFFSET.
+            "offsets": {
+                "number": render.NUMBER_OFFSET,
             },
         },
         "width": plan.width,
@@ -308,6 +401,10 @@ def view(game):
         "turn": info["turn"],
         "lastRoll": info["last_roll"],
         "yourTurn": your_turn,
+        # Whether the client should ask for another move to be played. Decided here, from
+        # the engine's `info`, rather than inferred in the browser from `yourTurn` and
+        # `done` — the client renders and reports clicks; it works nothing out.
+        "awaitingOpponent": game.awaiting_opponent,
         "currentPlayer": info["player"],
         "done": info["done"],
         "winner": info["winner"],
@@ -486,9 +583,10 @@ class Games:
     def __init__(self):
         self._games = {}
 
-    def new(self, opponent=None, rules_name="ranked1v1", seed=None, record_game=False):
+    def new(self, opponent=None, rules_name="ranked1v1", seed=None, record_game=False,
+            paced=False):
         game = Game(opponent=opponent, rules_name=rules_name, seed=seed,
-                    record_game=record_game)
+                    record_game=record_game, paced=paced)
         self._games[game.id] = game
         return game
 

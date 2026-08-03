@@ -16,12 +16,24 @@ const SVG_NS = "http://www.w3.org/2000/svg";
  * cannot drift apart. */
 const PLAYER_COLOURS = { 1: "#d64545", 2: "#3b6fd4", 3: "#e08b2a", 4: "#4aa564" };
 
+/* How long the opponent's moves are spaced out on screen.
+ *
+ * The engine decides a whole turn in well under a millisecond, so without this the
+ * opponent's reply — four setup placements, or a roll and a robber move and three builds —
+ * lands as a single repaint and the board has simply changed. A second apiece makes it a
+ * sequence you can follow: the server plays one decision per request, so what you watch is
+ * the order it actually happened in.
+ *
+ * This is the interface's own pacing and nothing else's. Training never loads this file. */
+const OPPONENT_MOVE_MS = 1000;
+
 const state = {
   geometry: null,
   view: null,
   gameId: null,
   mode: null,        // which board action type is armed
   busy: false,
+  epoch: 0,          // bumped by a new game, so a running watch knows it is stale
 };
 
 /** Asset file name for a player's pieces, e.g. 1 -> "red". */
@@ -29,6 +41,11 @@ const colourOf = (player) => (state.geometry.art.colours[player] || "black");
 
 /** Sprite sizes, taken from the PNG renderer so both draw the board the same. */
 const scale = (name) => state.geometry.art.scales[name];
+
+/** Where a sprite sits relative to its tile's centre, in hex heights. Served rather than
+ *  written here, for the same reason the sizes are: two renderers placing the same asset
+ *  differently is a divergence nobody notices until they compare a screenshot to the game. */
+const offset = (name) => state.geometry.art.offsets[name];
 
 /** Asset file name for a resource. The art set calls wheat "weat" and ore "stone". */
 const resourceImage = (name) => state.geometry.art.resources[name] || name;
@@ -110,34 +127,83 @@ const postJSON = (path, payload) =>
     body: JSON.stringify(payload || {}),
   });
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /* ----------------------------------------------------------------- game */
 
+/* Both of these hold `busy` until the opponent has finished replying, which is now a matter
+ * of seconds rather than milliseconds — long enough that a click would otherwise land, be
+ * refused by the server as out of turn, and replace the hint with an error the player did
+ * nothing to deserve.
+ *
+ * `epoch` is what makes New game safe to press at any moment: a request already in flight
+ * finds the epoch changed when it lands and drops its answer, instead of drawing the
+ * abandoned game over the new one. */
+
 async function newGame() {
-  const seedField = document.getElementById("seed").value;
-  state.view = await postJSON("/api/game", {
-    opponent: document.getElementById("opponent").value,
-    rules: document.getElementById("rules").value,
-    seed: seedField === "" ? null : Number(seedField),
-  });
-  state.gameId = state.view.gameId;
-  state.mode = null;
-  render();
+  const epoch = ++state.epoch;
+  state.busy = true;
+  try {
+    const seedField = document.getElementById("seed").value;
+    const view = await postJSON("/api/game", {
+      opponent: document.getElementById("opponent").value,
+      rules: document.getElementById("rules").value,
+      seed: seedField === "" ? null : Number(seedField),
+    });
+    if (state.epoch !== epoch) return;
+    state.view = view;
+    state.gameId = view.gameId;
+    state.mode = null;
+    render();
+    await watchOpponent();
+  } finally {
+    if (state.epoch === epoch) state.busy = false;
+  }
 }
 
 async function play(index) {
   if (state.busy) return;
+  const epoch = state.epoch;
   state.busy = true;
   try {
-    state.view = await postJSON(`/api/game/${state.gameId}/action`, { index });
+    const view = await postJSON(`/api/game/${state.gameId}/action`, { index });
+    if (state.epoch !== epoch) return;
+    state.view = view;
     state.mode = null;
     render();
+    await watchOpponent();
   } catch (error) {
     // The server refuses anything illegal, so this means the two disagreed — say so
     // loudly rather than leaving a click that quietly does nothing.
-    setHint(`⚠ ${error.message}`);
+    if (state.epoch === epoch) setHint(`⚠ ${error.message}`);
   } finally {
-    state.busy = false;
+    if (state.epoch === epoch) state.busy = false;
   }
+}
+
+/** Watch the opponent play, one move a second, drawing the board after each.
+ *
+ * The server decides whether a move is owed (`awaitingOpponent`) and plays exactly one per
+ * request, so this neither knows the rules nor can get the order wrong: what is drawn is
+ * the sequence the engine produced.
+ *
+ * Bounded rather than `while (true)`, in the same spirit as the server's own loop — a bug
+ * that left the opponent moving forever should stop and say so, not poll until the tab is
+ * closed. `epoch` is the other guard: a game started mid-watch retires the old watcher
+ * rather than letting it draw the previous game over the new board.
+ */
+async function watchOpponent() {
+  const epoch = state.epoch;
+  for (let moves = 0; moves < 1000; moves += 1) {
+    if (state.epoch !== epoch || !state.view || !state.view.awaitingOpponent) return;
+    await sleep(OPPONENT_MOVE_MS);
+    if (state.epoch !== epoch) return;
+    const view = await postJSON(`/api/game/${state.gameId}/advance`);
+    if (state.epoch !== epoch) return;
+    state.view = view;
+    render();
+  }
+  setHint("⚠ the opponent would not stop moving");
 }
 
 /* --------------------------------------------------------------- drawing */
@@ -206,11 +272,14 @@ function drawBoard() {
   for (const spot of geometry.tiles) {
     const tile = tileById[spot.id];
     if (tile.number === null) continue;
+    // The art has a blank panel cut out of it for the token, and it is not in the middle of
+    // the hex — the sheaf or the tree is drawn above it. `offsets.number` is where its
+    // centre is; see interfaces/render.py::NUMBER_OFFSET.
     const size = geometry.hexWidth * scale("number");
     el("image", {
       href: `/images/numbers/${tile.number}.png`,
       x: spot.x - size / 2,
-      y: spot.y - size / 2 + geometry.hexHeight * 0.06,
+      y: spot.y - size / 2 + geometry.hexHeight * offset("number"),
       width: size,
       height: size,
     }, svg);
@@ -504,10 +573,32 @@ function setHint(text) {
 
 /* ------------------------------------------------------------------ boot */
 
+const report = (error) => setHint(`⚠ ${error.message}`);
+
+/* The opponent list comes from the server, because which opponents exist is not fixed: the
+ * learned one appears only when a champion actually loads, and a champion trained against a
+ * different observation layout does not. A hardcoded <option> would still be clickable and
+ * the server would refuse it with a 400 the player did nothing to deserve. */
+function fillOpponents(available) {
+  const select = document.getElementById("opponent");
+  select.replaceChildren();
+  for (const { name, label, default: isDefault } of available) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = label;
+    option.selected = isDefault;
+    select.append(option);
+  }
+}
+
 async function start() {
   state.geometry = await getJSON("/api/geometry");
-  document.getElementById("new-game").addEventListener("click", newGame);
+  fillOpponents(state.geometry.opponents);
+  // Not `newGame` itself: it now waits for the opponent, so a failure part way through is
+  // a rejected promise the click handler would drop on the floor.
+  document.getElementById("new-game")
+    .addEventListener("click", () => newGame().catch(report));
   await newGame();
 }
 
-start().catch((error) => setHint(`⚠ ${error.message}`));
+start().catch(report);
