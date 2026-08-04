@@ -380,6 +380,24 @@ So the in-loop curve in `metrics.jsonl` is a *lower bound with a loose relations
 thing being built*. Reading it as the run's progress — which is the natural thing to do, since
 it is the only number the loop prints — would have got this run abandoned twice.
 
+**Measured a second time, and it is worse than "loosely related".** On the run that followed
+the observation change of record 0024, the in-loop column read 62.5 → 60.4 → 50.5 → 51.0 and
+said the run peaked at iteration 20. Every checkpoint then played 200 identical games *with*
+search:
+
+```
+iteration 95 (final)   74.7%   <- the policy column's worst reading
+iteration 48           72.3%
+iteration 72           70.2%
+iteration 24           69.7%
+iteration 20           69.0%   <- the policy column's best reading, and best.pt
+```
+
+The ranking is close to **reversed**. `best.pt` was the weakest candidate of the five.
+Search leans hardest on the value head, and the value head kept improving while the policy's
+argmax drifted — so a falling policy column is not evidence that a run has peaked, and acting
+on it would have thrown away the best model twice.
+
 **What should change:** the loop should evaluate with a small number of simulations rather
 than zero, accepting the cost, or `best.pt` should be selected on something else entirely.
 Left as it is for this run because changing the selection rule mid-run is worse than working

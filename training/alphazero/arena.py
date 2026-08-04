@@ -73,11 +73,19 @@ def build_agent(spec):
 
         return RandomAgent(spec.get("seed", 0))
     if kind == "mcts":
-        from training.alphazero.agent import MCTSAgent
+        # Through champion.load rather than MCTSAgent.load, because it grafts a checkpoint
+        # trained against an older observation instead of raising. Loading directly killed
+        # a whole 16-worker pool with a BrokenProcessPool the first time a candidate list
+        # included the reigning champion after an encoder change — the network constructor
+        # raises on a mismatched obs_size, and that happens inside the pool initializer.
+        from training.alphazero.champion import load as load_champion
 
-        return MCTSAgent.load(spec["path"], simulations=spec.get("simulations", 32),
+        agent = load_champion(path=spec["path"], simulations=spec.get("simulations", 32),
                               temperature=spec.get("temperature", 0.0),
                               seed=spec.get("seed", 0))
+        if agent is None:
+            raise ValueError(f"{spec['path']} is not a usable model for this engine")
+        return agent
     if kind == "policy":
         from training.agent import PolicyAgent
 

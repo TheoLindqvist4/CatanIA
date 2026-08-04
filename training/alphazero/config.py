@@ -43,7 +43,8 @@ DEFAULTS = {
     "dirichlet_weight": 0.10,  # AlphaZero uses 0.25 at 800 sims; at 96 it flips 24% of labels
 
     # --- replay ---------------------------------------------------------------------- #
-    "replay_buffer_size": 220_000,  # guide: 2,000,000. 15 GB in float32; see replay_buffer.
+    "replay_buffer_size": 180_000,  # guide: 2,000,000. The observation is 2,503 floats,
+                                    # so this is ~0.9 GB in float16; see replay_buffer.
     "min_buffer": 4_000,            # positions before the first gradient step
 
     # --- learning -------------------------------------------------------------------- #
@@ -72,7 +73,7 @@ DEFAULTS = {
     #
     # Whether the *search* helps is a different question, and it is answered once, properly,
     # by the promotion gate at `promotion_simulations`.
-    "evaluation_games": 150,        # guide: 1,000. Wilson interval decides, not the count.
+    "evaluation_games": 100,        # guide: 1,000. Wilson interval decides, not the count.
     "promotion_games": 400,
     "promotion_threshold": 0.55,
     "evaluate_every": 20,           # iterations
@@ -81,7 +82,7 @@ DEFAULTS = {
     # --- housekeeping ---------------------------------------------------------------- #
     "checkpoint_interval_minutes": 15,
     "seed": 0,
-    "warm_start": "checkpoints/az_snapshots/iter_61.pt",
+    "warm_start": "models/champion_az.pt",
     "run_directory": "checkpoints/alphazero",
 }
 

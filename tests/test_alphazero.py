@@ -911,6 +911,44 @@ def test_arena_rank_orders_candidates_best_first(tmp_path):
     assert rates[0] == rates[1], "identical networks must score identically on paired games"
 
 
+def test_arena_builds_a_checkpoint_from_an_older_observation(tmp_path):
+    """A candidate list may include a champion promoted before an encoder change.
+
+    Building it directly raises — the network constructor rejects a mismatched `obs_size` —
+    and that happens inside the pool *initializer*, which takes the whole pool down with a
+    BrokenProcessPool rather than a readable error. It has to graft instead.
+    """
+    from training.alphazero import layouts
+    from training.alphazero.arena import build_agent
+    from training.alphazero.network import _input_map, _segments
+
+    net = new_network()
+    original = net.state_dict()
+    old_layout = layouts.HISTORICAL[1884]
+    narrow = dict(original)
+    for name, segments in _segments(1).items():
+        mapping = _input_map(segments, old_layout, layouts.signature())
+        columns = sorted((i for i, m in enumerate(mapping) if m >= 0),
+                         key=lambda i: mapping[i])
+        narrow[name] = original[name][:, columns]
+
+    stale = tmp_path / "stale.pt"
+    torch.save({"config": {**net.config(), "obs_size": 1884, "layout": None},
+                "weights": narrow}, stale)
+
+    agent = build_agent({"kind": "mcts", "path": str(stale), "simulations": 2})
+    assert agent is not None
+    assert agent.net.obs_size == encoder.SIZE
+
+
+def test_arena_refuses_a_checkpoint_it_cannot_use(tmp_path):
+    from training.alphazero.arena import build_agent
+
+    missing = tmp_path / "nothing.pt"
+    with pytest.raises(ValueError, match="not a usable model"):
+        build_agent({"kind": "mcts", "path": str(missing)})
+
+
 def test_arena_builds_every_agent_kind_it_claims_to(tmp_path):
     from training.alphazero.arena import build_agent
 

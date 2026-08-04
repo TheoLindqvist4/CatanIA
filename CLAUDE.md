@@ -211,7 +211,11 @@ that already plays is what makes a few hours worth anything. `--cold` does it th
 Say which one produced a number.
 
 ⚠️ **The AlphaZero loop's win-rate column measures the raw policy, and the champion plays with
-search. They move in opposite directions.** On identical games, between two checkpoints of one
+search. They move in opposite directions — twice measured, in both directions.** In the run on
+the 2,503-float observation the policy score went 62.5 → 60.4 → 50.5 → 51.0 and read as "peaked
+at iteration 20". Ranked *with search* on identical games, the order was almost exactly
+reversed: iteration 95 best at 74.7%, iteration 20 **worst** at 69.0%. A declining policy
+column is not evidence a run has peaked. The earlier measurement: On identical games, between two checkpoints of one
 run: raw policy 47.4% → 43.8%, the same weights *with 32 simulations* 57.1% → **60.8%**. The
 value head is what search leans on hardest and it was still improving while the policy's
 argmax drifted. So `checkpoints/alphazero/best.pt` is best-*policy*, not best-*player* —

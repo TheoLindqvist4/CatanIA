@@ -41,7 +41,7 @@ dirichlet_alpha: 0.5
 dirichlet_weight: 0.10
 
 # --- replay ------------------------------------------------------------------------- #
-replay_buffer_size: 220000         # guide: 2000000 — 15 GB in float32 at this observation
+replay_buffer_size: 180000         # the observation grew to 2503 floats; 180k is ~0.9 GB
 min_buffer: 4000
 
 # --- learning ------------------------------------------------------------------------ #
@@ -60,7 +60,7 @@ grad_clip: 1.0
 # batch 1, so 200 games at 32 simulations costs ~13 minutes. At 0 simulations the agent plays
 # its raw policy — one forward per move, ~40 seconds — which answers the only question the
 # loop needs answered. Whether search helps is settled once, by the promotion gate.
-evaluation_games: 150              # guide: 1000 — the Wilson bound decides, not the count
+evaluation_games: 100              # guide: 1000 — the Wilson bound decides, not the count
 promotion_games: 400
 promotion_threshold: 0.55          # guide: 0.55
 evaluate_every: 20
@@ -69,5 +69,5 @@ eval_simulations: 0                # 0 = the raw policy
 # --- housekeeping --------------------------------------------------------------------- #
 checkpoint_interval_minutes: 15    # guide: 30
 seed: 0
-warm_start: checkpoints/az_snapshots/iter_61.pt
+warm_start: models/champion_az.pt
 run_directory: checkpoints/alphazero
