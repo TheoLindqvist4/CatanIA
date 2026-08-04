@@ -394,8 +394,10 @@ def test_pip_potential_sums_the_odds_of_the_adjacent_tiles():
 def test_buildability_flags_agree_with_the_rules():
     state = mid_game()
     vertex_rows = E.block(E.encode(state, 1), "vertices")
-    distance_at = E.VERTEX_FEATURES - 2
-    connected_at = E.VERTEX_FEATURES - 1
+    # By name, not by counting back from the end: features were appended to this row and a
+    # `VERTEX_FEATURES - 2` was silently wrong the moment they were.
+    distance_at = E.VERTEX_OFFSETS["buildable"]
+    connected_at = E.VERTEX_OFFSETS["my_road"]
     for vertex in range(1, T.NUM_VERTICES + 1):
         row = vertex_rows[vertex - 1]
         assert row[distance_at] == float(rules.respects_distance_rule(state, vertex))

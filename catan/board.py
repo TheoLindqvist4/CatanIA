@@ -37,6 +37,15 @@ ROLLS = range(2, 13)
 #: A generic 3:1 harbour, as opposed to a resource-specific 2:1 one.
 GENERIC_HARBOUR = None
 
+
+def roll_odds(number):
+    """The share of rolls that produce ``number``, out of 36. ``None`` (a desert) is 0.
+
+    Two dice, so 8 pays out five times as often as 2. Here rather than in three callers
+    because it is the same fact each time.
+    """
+    return 0.0 if number is None else (6 - abs(7 - number)) / 36.0
+
 #: The nine harbours: four generic 3:1, plus one 2:1 for each resource.
 HARBOUR_TYPES = (GENERIC_HARBOUR,) * 4 + tuple(Resource)
 
@@ -265,6 +274,92 @@ class Board:
     def production_at(self, vertex):
         """Every tile touching ``vertex``, desert included."""
         return self.vertex_production[check_id(vertex, NUM_VERTICES, "vertex")]
+
+    def expected_production(self, vertex):
+        """Expected cards **per resource, per roll** at ``vertex``, as a list of length 5.
+
+        The board already knows which tiles a corner touches and what number each carries;
+        this is the two multiplied together and summed. It is the quantity a person means by
+        "that spot is an 8 on ore and a 6 on wheat", and the one the observation was missing:
+        ``pip potential`` is this list *summed*, which cannot tell three sheep from an even
+        spread — see ``docs/decisions/0024-what-a-placement-can-see.md``.
+
+        One definition, used by the encoder and by ``training.alphazero.study``. Two would
+        drift, and the one in the study is the one a person reads.
+        """
+        from catan.resources import NUM_RESOURCES
+
+        per = [0.0] * NUM_RESOURCES
+        for production in self.vertex_production[
+            check_id(vertex, NUM_VERTICES, "vertex")
+        ]:
+            if production.resource is not DESERT:
+                per[int(production.resource)] += roll_odds(production.number)
+        return per
+
+    def resource_scarcity(self):
+        """Expected cards per roll of each resource across the **whole board**.
+
+        What "ore is scarce on this board" means, as five numbers. Balanced generation fixes
+        the resource *counts*, but not which numbers they land on, so this genuinely varies
+        from board to board.
+        """
+        from catan.resources import NUM_RESOURCES
+
+        per = [0.0] * NUM_RESOURCES
+        for tile in range(1, NUM_TILES + 1):
+            resource = self.resource_at(tile)
+            if resource is not None:
+                per[int(resource)] += roll_odds(self.number_at(tile))
+        return per
+
+    def harbour_distances(self):
+        """``{vertex: [steps to the nearest harbour of each kind]}``, generic first.
+
+        Distance in **vertices walked along the coast and inland**, which is the number of
+        roads it would take to reach a corner carrying that harbour. ``None`` where a kind
+        does not exist on this board — three of the nine harbours are resource-specific
+        duplicates of nothing, so two resources have no harbour at all on most boards.
+
+        Board geometry and harbour placement are both fixed once generated, so this is
+        computed once and cached with everything else that never changes. A vertex knowing
+        it *is* a harbour was already encoded; a vertex knowing one is two roads away was
+        not, which is most of why a trained agent ignored them.
+        """
+        cached = self.__dict__.get("_harbour_distances")
+        if cached is not None:
+            return cached
+
+        from collections import deque
+
+        from catan.resources import NUM_RESOURCES
+        from catan.topology import VERTEX_NEIGHBOURS
+
+        kinds = 1 + NUM_RESOURCES                  # generic, then one per resource
+        distances = {v: [None] * kinds for v in range(1, NUM_VERTICES + 1)}
+
+        for kind in range(kinds):
+            sources = [
+                vertex for vertex in range(1, NUM_VERTICES + 1)
+                for harbour in self.harbours_at(vertex)
+                if (kind == 0 and harbour is GENERIC_HARBOUR)
+                or (kind > 0 and harbour is not GENERIC_HARBOUR and int(harbour) == kind - 1)
+            ]
+            if not sources:
+                continue
+            seen = {vertex: 0 for vertex in sources}
+            queue = deque(sources)
+            while queue:
+                vertex = queue.popleft()
+                for neighbour in VERTEX_NEIGHBOURS[vertex]:
+                    if neighbour not in seen:
+                        seen[neighbour] = seen[vertex] + 1
+                        queue.append(neighbour)
+            for vertex, steps in seen.items():
+                distances[vertex][kind] = steps
+
+        self.__dict__["_harbour_distances"] = distances
+        return distances
 
     def resources_at(self, vertex):
         """The resources ``vertex`` collects, desert excluded. Used by setup payout."""

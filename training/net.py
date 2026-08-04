@@ -144,7 +144,5 @@ def build(config):
     if kind == "structured":
         from training.structured_net import StructuredPolicyValueNet
 
-        return StructuredPolicyValueNet.from_config(
-            {k: v for k, v in config.items() if k != "kind"}
-        )
+        return StructuredPolicyValueNet.from_config(config)
     raise ValueError(f"unknown network kind {kind!r} in checkpoint")

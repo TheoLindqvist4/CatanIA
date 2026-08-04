@@ -53,6 +53,7 @@ the reasoning at the time is the point.
 | [0021](decisions/0021-structure-aware-network.md) | A network that knows the board has a shape | accepted |
 | [0022](decisions/0022-affordability-features.md) | The agent can see how far its hand is from a purchase | accepted |
 | [0023](decisions/0023-alphazero-self-play.md) | AlphaZero-style self-play, beside the PPO lineage | accepted |
+| [0024](decisions/0024-what-a-placement-can-see.md) | What a placement can see: per-resource production, harbour reach | accepted |
 
 ## Worth knowing
 

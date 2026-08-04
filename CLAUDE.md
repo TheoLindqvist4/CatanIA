@@ -51,17 +51,19 @@ over the hand limit. `info["player"]` is the authority.
 
 ## The observation
 
-1,884 floats. `LAYOUT` maps a name to its slice.
+2,503 floats. `LAYOUT` maps a name to its slice; `VERTEX_OFFSETS` names the fields inside a
+vertex row, because counting to them by hand is how a test broke.
 
 ```
 tiles         19 x 19   resource, number, odds, robber
-vertices      54 x 16   owner, city, harbour, pip potential, buildability
+vertices      54 x 27   owner, city, harbour, pip potential, buildability,
+                        per-resource production, harbour nearness
 roads         72 x  6   owner, buildability
-players        4 x 29   hands and holdings, masked for opponents
+players        4 x 34   hands and holdings (masked for opponents), production rate
 affordability  4 x  4   my hand against each purchase, priced through my trade rates
 history        4 x 12   production, spending, purchases, idleness  (the public record)
 rolls             12   how often each total has come up
-global            35   phase, last roll, bank, ruleset, bookkeeping
+global            40   phase, last roll, bank, ruleset, bookkeeping, board scarcity
 ```
 
 **About 40% of it never changes during a game** and is cached on the `Board`
@@ -77,16 +79,23 @@ own harbours. See `docs/decisions/0022-affordability-features.md`, which is also
 argument for four columns rather than twenty lives.
 
 **What is NOT in it, and people assume is:**
-- **Which numbers a vertex touches.** Only an aggregate "pip potential". The structured net
-  recovers some of it by averaging adjacent tile rows, but "an 8 on ore" is blended with the
-  other two tiles. Now the largest known gap.
+- ~~**Which numbers a vertex touches.**~~ Fixed in record 0024: a vertex now carries its
+  expected cards *per resource*, and how near the closest harbour of each kind is. The old
+  resource-blind `pip potential` is still there and still first — the agent that maximised it
+  placed at 0.005 pips off the best available spot every time, which is what a resource-blind
+  signal gets you.
 - **Adjacency**, for the flat MLP. It must infer that vertex 23 neighbours 24 from
   correlations, though `topology.py` knows.
 - **Any estimate of an opponent's hand.** Deliberate — a robber steal moves a card only two
   players ever see. The `history` block gives cumulative production and spending per player,
   which bounds it; deriving the bound is left to the network.
 
-Changing `encoder.SIZE` invalidates every checkpoint. The interfaces check `obs_size` *and*
+Changing `encoder.SIZE` no longer invalidates a checkpoint, as long as the change **appends**:
+`training/alphazero/layouts.py` records the block shapes, new checkpoints carry their own, and
+`network.graft` widens every observation-width layer with zero columns. Verified rather than
+assumed — the champion measured 74.7% before the 1884 → 2503 change and 75.6% after. Add an
+entry to `layouts.HISTORICAL` keyed by the new size, and **never edit an existing one**: it is
+a statement about a file already on disk. The interfaces check `obs_size` *and*
 `num_actions` before offering a model, because a stale one loads fine and then fails on the
 first move.
 

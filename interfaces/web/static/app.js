@@ -24,7 +24,11 @@ const PLAYER_COLOURS = { 1: "#d64545", 2: "#3b6fd4", 3: "#e08b2a", 4: "#4aa564" 
  * sequence you can follow: the server plays one decision per request, so what you watch is
  * the order it actually happened in.
  *
- * This is the interface's own pacing and nothing else's. Training never loads this file. */
+ * This is the interface's own pacing and nothing else's. Training never loads this file.
+ *
+ * A *watched* game — both seats played by agents — is paced by the server instead, which
+ * sends `paceMs`. One number in one place: the pace is a property of the game being watched,
+ * not of this file. */
 const OPPONENT_MOVE_MS = 1000;
 
 const state = {
@@ -147,6 +151,9 @@ async function newGame() {
     const seedField = document.getElementById("seed").value;
     const view = await postJSON("/api/game", {
       opponent: document.getElementById("opponent").value,
+      // Empty string means "I am playing"; anything else names the agent that takes my
+      // seat, which turns this into a game to watch rather than one to play.
+      watch: (document.getElementById("watch") || {}).value || null,
       rules: document.getElementById("rules").value,
       seed: seedField === "" ? null : Number(seedField),
     });
@@ -196,7 +203,7 @@ async function watchOpponent() {
   const epoch = state.epoch;
   for (let moves = 0; moves < 1000; moves += 1) {
     if (state.epoch !== epoch || !state.view || !state.view.awaitingOpponent) return;
-    await sleep(OPPONENT_MOVE_MS);
+    await sleep(state.view.paceMs || OPPONENT_MOVE_MS);
     if (state.epoch !== epoch) return;
     const view = await postJSON(`/api/game/${state.gameId}/advance`);
     if (state.epoch !== epoch) return;
@@ -588,6 +595,24 @@ function fillOpponents(available) {
     option.textContent = label;
     option.selected = isDefault;
     select.append(option);
+  }
+
+  /* The same list again for your own seat, plus an empty first entry meaning "I play".
+   * Two agents can then be put against each other and watched — the champion against the
+   * heuristic, or against the previous lineage — without any of it being decided here. */
+  const watch = document.getElementById("watch");
+  if (!watch) return;
+  watch.replaceChildren();
+  const playing = document.createElement("option");
+  playing.value = "";
+  playing.textContent = "I play";
+  playing.selected = true;
+  watch.append(playing);
+  for (const { name, label } of available) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = `Watch ${label}`;
+    watch.append(option);
   }
 }
 

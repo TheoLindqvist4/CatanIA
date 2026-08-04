@@ -1023,6 +1023,31 @@ def distribute(state, roll):
 # SCORING                                                                     #
 # --------------------------------------------------------------------------- #
 
+def production_rates(state, player):
+    """Expected cards **per resource, per roll** from everything ``player`` has built.
+
+    A settlement collects one and a city two, so this is the board's per-vertex production
+    weighted by the piece standing on it. Entirely public: the buildings and the number
+    tokens are both on the table, and this is what a person means by "they make no brick".
+
+    The robber is deliberately *not* subtracted. Where it sits is a fact about right now and
+    it moves every time a 7 comes up; this is the standing rate, and the robber's position is
+    already encoded on the tile it is on.
+    """
+    from catan.resources import NUM_RESOURCES
+
+    per = [0.0] * NUM_RESOURCES
+    for vertex in range(1, NUM_VERTICES + 1):
+        if state.vertex_owner[vertex] != player:
+            continue
+        yields = PIECE_YIELD[state.vertex_piece[vertex]]
+        if not yields:
+            continue
+        for resource, rate in enumerate(state.board.expected_production(vertex)):
+            per[resource] += rate * yields
+    return per
+
+
 def victory_points(state, player):
     """Total victory points: buildings, both awards, and Victory Point cards.
 

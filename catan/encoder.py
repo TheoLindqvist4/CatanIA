@@ -117,6 +117,16 @@ TILE_FEATURES = (
     + 1                   # robber here
 )
 
+#: Harbour kinds a vertex can *reach*: generic, plus one per resource. One fewer than
+#: :data:`HARBOUR_KINDS`, whose first slot means "there is no harbour here" — a thing a
+#: distance cannot express.
+HARBOUR_REACH_KINDS = HARBOUR_KINDS - 1
+
+#: Roads beyond which a harbour is treated as unreachable. Six is most of the board; the
+#: value is a scale, not a rule, so a distance of exactly six and one of nine are equally
+#: "far" and the network is not asked to care.
+HARBOUR_REACH_LIMIT = 6
+
 VERTEX_FEATURES = (
     (MAX_PLAYERS + 1)     # owner: empty, then one slot per player
     + 1                   # is a city (a settlement is owner set and this clear)
@@ -124,6 +134,9 @@ VERTEX_FEATURES = (
     + 1                   # pip potential: summed odds of the adjacent tiles
     + 1                   # satisfies the distance rule
     + 1                   # reachable from my road network
+    # ---- appended; everything above keeps the offset it had ----------------- #
+    + NUM_RESOURCES       # expected cards a roll of *each* resource, from this corner
+    + HARBOUR_REACH_KINDS  # how near the nearest harbour of each kind is, 1 = adjacent
 )
 
 ROAD_FEATURES = (
@@ -147,7 +160,33 @@ PLAYER_FEATURES = (
     + 3                   # settlements, cities, roads left
     + NUM_RESOURCES       # bank trade rates
     + 1                   # discards still owed
+    # ---- appended; everything above keeps the offset it had ----------------- #
+    + NUM_RESOURCES       # expected cards a roll of each resource, from their buildings
 )
+
+#: Where each field sits inside one vertex row, by name.
+#:
+#: Written down once, here, because three places used to count to it: the encoder, the static
+#: template and the tests — and the tests counted *backwards from the end*, which was correct
+#: until features were appended and then silently wrong. A name cannot drift the way an
+#: arithmetic expression can.
+VERTEX_OFFSETS = {
+    "owner": 0,
+    "city": MAX_PLAYERS + 1,
+    "harbour": MAX_PLAYERS + 2,
+    "pip_potential": MAX_PLAYERS + 2 + HARBOUR_KINDS,
+    "buildable": MAX_PLAYERS + 3 + HARBOUR_KINDS,
+    "my_road": MAX_PLAYERS + 4 + HARBOUR_KINDS,
+    "production": MAX_PLAYERS + 5 + HARBOUR_KINDS,
+    "harbour_reach": MAX_PLAYERS + 5 + HARBOUR_KINDS + NUM_RESOURCES,
+}
+
+#: Where each appended field sits inside one player row.
+PLAYER_OFFSETS = {"production": PLAYER_FEATURES - NUM_RESOURCES}
+
+#: Divides the per-resource production rate into roughly [0, 1]. A player producing one card
+#: of a resource every three rolls is doing very well, so 0.33 is the top of the useful range.
+PRODUCTION_RATE_SCALE = 1 / 3
 
 #: Per purchase in :data:`catan.resources.PURCHASES`, how far my hand is from paying for it.
 #:
@@ -208,6 +247,9 @@ GLOBAL_FEATURES = (
     + 1                   # it is my decision right now
     + 1                   # players in the game
     + 4                   # ruleset: win target, hand limit, friendly robber, balanced dice
+    # ---- appended, and board-static: written by the template, not by _encode_global,
+    # which writes forwards from the start of the block and stops before here ---------- #
+    + NUM_RESOURCES       # what the whole board makes of each resource — scarcity
 )
 
 
@@ -293,6 +335,7 @@ def _static_template(board):
         out[at] = 0.0 if resource is None else _odds(number)
         # at + 1 is the robber flag, which moves — left at 0 for the caller
 
+    distances = board.harbour_distances()
     base = LAYOUT["vertices"].start
     for vertex in range(1, NUM_VERTICES + 1):
         # owner one-hot and the city flag are play, not layout; skip to the harbours
@@ -309,14 +352,34 @@ def _static_template(board):
         # the classic settlement heuristic: how often this spot pays out at all.
         # The 0.0 start matters: a corner touching only the desert sums an empty
         # generator, and bare sum() would return int 0 into a float vector.
-        out[at] = sum(
-            (
-                _odds(board.number_at(tile))
-                for tile in VERTEX_TILES[vertex]
-                if board.resource_at(tile) is not None
-            ),
-            0.0,
-        )
+        production = board.expected_production(vertex)
+        out[at] = sum(production, 0.0)
+        at += 1
+
+        # Past the two buildability flags, which are play and are written per encode.
+        at += 2
+
+        # The same production, *split by resource*. The sum above cannot tell three sheep
+        # from an even spread across three resources, and choosing between those is most of
+        # what opening placement is. See docs/decisions/0024-what-a-placement-can-see.md.
+        for resource in range(NUM_RESOURCES):
+            out[at + resource] = production[resource]
+        at += NUM_RESOURCES
+
+        # How near the nearest harbour of each kind is, as 1 for "here" falling to 0 at
+        # HARBOUR_REACH_LIMIT roads away. A vertex already knew whether it *was* a harbour;
+        # it did not know one was two roads off, which is the form the information is
+        # actually used in.
+        for kind, steps in enumerate(distances[vertex]):
+            if steps is not None:
+                out[at + kind] = max(0.0, 1.0 - steps / HARBOUR_REACH_LIMIT)
+
+    # What this board makes of each resource in total. Balanced generation fixes the
+    # resource counts but not which numbers they land on, so this varies board to board and
+    # is what "ore is scarce here" means.
+    at = LAYOUT["global"].stop - NUM_RESOURCES
+    for resource, rate in enumerate(board.resource_scarcity()):
+        out[at + resource] = rate
 
     board.__dict__["_observation_template"] = out
     return out
@@ -503,6 +566,13 @@ def _encode_players(state, out, me, slots, my_rates):
         at += NUM_RESOURCES
 
         out[at] = state.discards_owed[player] / MAX_OF_ONE_RESOURCE
+        at += 1
+
+        # What this player's board *makes*, per resource, per roll. Public: buildings and
+        # number tokens are both on the table, and it is what a person means by "they have
+        # no brick". Encoded for opponents too, for the same reason.
+        for resource, rate in enumerate(rules.production_rates(state, player)):
+            out[at + resource] = min(rate / PRODUCTION_RATE_SCALE, 1.0)
 
 
 def _encode_affordability(state, out, me, rates):

@@ -15,6 +15,12 @@
              champion loads, so listing them here would offer one the server would refuse. -->
         <select id="opponent"></select>
       </label>
+      <label>Your seat
+        <!-- Empty means you play. Anything else puts an agent in your seat and the game
+             becomes one to watch: the server paces it and the board draws every decision.
+             Also filled from /api/geometry, for the same reason as the opponent list. -->
+        <select id="watch"></select>
+      </label>
       <label>Rules
         <select id="rules">
           <option value="ranked1v1">Ranked 1v1 (15 pts)</option>

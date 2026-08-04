@@ -69,6 +69,16 @@ from catan.topology import (
 )
 from training.net import MASK_FILL, _layer
 
+
+def _layout_signature():
+    """The encoder's block shapes, for recording in a checkpoint. Imported lazily so this
+    module does not depend on the AlphaZero package."""
+    return {
+        name: encoder.SHAPES.get(
+            name, (1, encoder.LAYOUT[name].stop - encoder.LAYOUT[name].start))
+        for name in encoder.LAYOUT
+    }
+
 # --------------------------------------------------------------------------- #
 # Where each block sits. Read from the encoder rather than written down, so a  #
 # change to the layout cannot silently misalign the reshape.                   #
@@ -371,11 +381,19 @@ class StructuredPolicyValueNet(nn.Module):
             "rounds": self.rounds,
             "trunk": self.trunk_width,
             "value_activation": self.value_activation,
+            # Not a constructor argument: the *shape of the observation* this checkpoint was
+            # trained against, recorded so a later encoder change can reconcile it without
+            # guessing which block grew. `obs_size` alone cannot say that — 1,884 floats
+            # could be many layouts. See training/alphazero/layouts.py.
+            "layout": {name: list(shape) for name, shape in _layout_signature().items()},
         }
+
+    #: Config keys that describe the checkpoint rather than construct the network.
+    NOT_ARGUMENTS = frozenset({"kind", "layout"})
 
     @classmethod
     def from_config(cls, config):
-        return cls(**{k: v for k, v in config.items() if k != "kind"})
+        return cls(**{k: v for k, v in config.items() if k not in cls.NOT_ARGUMENTS})
 
     def num_parameters(self):
         return sum(p.numel() for p in self.parameters())

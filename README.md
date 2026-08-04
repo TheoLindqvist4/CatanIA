@@ -24,8 +24,8 @@ python -m interfaces.web        # then open http://127.0.0.1:8000
 | **A hand-written opponent** | Positional judgement from marginal value — beats a naive greedy agent 96.7% |
 | **Two trained opponents** | PPO self-play, and AlphaZero self-play with search — the latter wins **74.7%** against the heuristic and **76.5%** against the former |
 | **Search that cannot cheat** | MCTS over a resampled information set — hidden cards are redrawn from public facts before the tree is built |
-| **The machinery to improve it** | 1,884-float observation, 325 discrete actions, parallel self-play, a promotion gate per lineage |
-| **833 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
+| **The machinery to improve it** | 2,503-float observation, 325 discrete actions, parallel self-play, a promotion gate per lineage |
+| **854 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
 
 ## Quick start
 
@@ -208,7 +208,7 @@ catan/                 the engine — no dependencies
   state.py               everything that changes during a game
   rules.py               legal_actions / apply — the only legality authority
   action_space.py        325 flat indices + a legality mask
-  encoder.py             the 1,884-float observation
+  encoder.py             the 2,503-float observation
   view.py                PublicView — what a player may see
   heuristics.py          position evaluation
   agents.py              the baseline agents and a match harness
@@ -232,11 +232,14 @@ training/              the only package that imports PyTorch
     trainer.py train.py         the continuous loop
     report.py                   what a run did, read back from metrics.jsonl
     agent.py champion.py        what you play against, and its gate
+    arena.py                    head-to-head matches across processes
+    layouts.py network.py       carrying a checkpoint across an observation change
+    study.py dashboard.py       what openings win, and a page showing a run
 
 benchmark/             games/sec, ms/game, and where the time goes
 configs/train.yaml     the run's settings
 
-docs/decisions/        23 records of why things are the way they are
+docs/decisions/        24 records of why things are the way they are
 ```
 
 ---

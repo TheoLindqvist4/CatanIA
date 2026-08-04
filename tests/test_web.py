@@ -872,3 +872,134 @@ def test_the_drawn_card_is_not_recorded_on_the_event():
     for event in game.info.get("events", ()):
         if event.kind is EventKind.BOUGHT_DEV:
             assert event.position == 0 and event.other == 0, event
+
+
+# =========================================================================== #
+# Watching two agents play                                                    #
+# =========================================================================== #
+
+def test_a_watched_game_puts_an_agent_in_the_human_seat():
+    game = api.Game(opponent="hard", watch="greedy", seed=11)
+
+    assert game.watching
+    assert game.watcher is not None
+    assert game.paced, "a spectated game must hand back one decision at a time"
+    assert game.awaiting_opponent, "nobody is playing, so every decision is owed"
+    assert game.info["turn"] == 0, (
+        "the constructor must not play the game: when both seats are agents the "
+        "'until it is the human's turn' loop has no stopping condition"
+    )
+
+
+def test_a_watched_game_advances_one_decision_at_a_time():
+    game = api.Game(opponent="hard", watch="greedy", seed=11)
+    movers = []
+    for _ in range(12):
+        movers.append(game.info["player"])
+        game.advance()
+    assert set(movers) == {1, 2}, "both seats must actually move"
+
+
+def test_a_watched_game_refuses_to_be_played():
+    game = api.Game(opponent="hard", watch="greedy", seed=11)
+    with pytest.raises(ValueError, match="watched, not played"):
+        game.play(0)
+
+
+def test_a_watched_game_reaches_an_end():
+    game = api.Game(opponent="hard", watch="greedy", seed=3)
+    for _ in range(20_000):
+        if game.info["done"]:
+            break
+        game.advance()
+    assert game.info["done"]
+    assert game.info["winner"] in (1, 2, None)
+
+
+def test_a_watched_view_says_so_and_carries_the_pace():
+    game = api.Game(opponent="hard", watch="greedy", seed=11)
+    payload = api.view(game)
+
+    assert payload["watching"] is True
+    assert payload["watchedBy"] == "greedy"
+    assert payload["paceMs"] == api.WATCH_PACE_MS
+    assert payload["yourTurn"] is False, "there is no 'you' in a watched game"
+    assert payload["awaitingOpponent"] is True
+
+
+def test_an_ordinary_game_is_not_watched():
+    game = api.Game(opponent="hard", seed=11)
+    payload = api.view(game)
+
+    assert game.watching is False
+    assert payload["watching"] is False
+    assert payload["paceMs"] is None
+    assert payload["watchedBy"] is None
+
+
+def test_a_watched_game_hides_the_opponent_exactly_as_a_played_one_does():
+    """Watching must not be a way to see more than a seat-1 player would."""
+    game = api.Game(opponent="hard", watch="greedy", seed=7)
+    for _ in range(40):
+        if game.info["done"]:
+            break
+        game.advance()
+
+    payload = api.view(game)
+    opponent = [p for p in payload["players"] if p["id"] != payload["you"]][0]
+    assert "cards" not in opponent
+    assert "hand" not in opponent
+    assert "handCount" in opponent
+
+
+def test_an_unknown_watcher_is_refused():
+    with pytest.raises(ValueError, match="unknown agent"):
+        api.Game(opponent="hard", watch="telepathy", seed=1)
+
+
+def test_a_watched_game_is_driven_over_http_and_is_not_recorded(server):
+    """The client's existing loop drives a whole agent-versus-agent game unchanged, and
+    games/ stays for the games a person actually played."""
+    _, body, _ = request(server, "/api/game",
+                         {"opponent": "hard", "watch": "greedy", "seed": 21})
+    view = json.loads(body)
+    game_id = view["gameId"]
+
+    assert view["watching"] is True
+    assert view["paceMs"] == api.WATCH_PACE_MS
+    assert view["yourTurn"] is False
+    from interfaces.web import server as web_server
+
+    assert web_server.GAMES.get(game_id).recorder is None, "two bots are not a game to keep"
+
+    for _ in range(2_000):
+        if view["done"]:
+            break
+        assert view["awaitingOpponent"], "a watched game always owes a decision"
+        _, body, _ = request(server, f"/api/game/{game_id}/advance", {})
+        view = json.loads(body)
+
+    assert view["done"], "the watched game never finished"
+    assert view["log"], "nothing was written down to watch"
+
+
+def test_a_watched_game_names_the_agents_instead_of_saying_you():
+    """There is no "you" in a game nobody is playing, and two bots have to be told apart."""
+    game = api.Game(opponent="hard", watch="greedy", seed=4242)
+    for _ in range(2_000):
+        if game.info["done"]:
+            break
+        game.advance()
+
+    payload = api.view(game)
+    text = " ".join(payload["log"])
+    assert "You " not in text and "Opponent " not in text, text[:200]
+    assert "greedy" in text or "hard" in text
+    assert payload["phaseHint"].startswith(("greedy", "hard"))
+
+
+def test_an_ordinary_game_still_addresses_the_player():
+    game = api.Game(opponent="hard", seed=4242)
+    game.play(game.info["legal"][0])
+    text = " ".join(api.view(game)["log"])
+    assert "You " in text

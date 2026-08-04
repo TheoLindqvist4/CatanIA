@@ -16,7 +16,10 @@ Routes
 ``GET  /app/<file>``              client code
 ``GET  /images/<path>``           board art
 ``GET  /api/geometry``            board coordinates, art and the opponent list — fetched once
-``POST /api/game``                start one: ``{opponent, rules, seed}``
+``POST /api/game``                start one: ``{opponent, rules, seed, watch}``
+                                  ``watch`` names an agent for seat 1, which makes the game
+                                  a spectated agent-versus-agent one rather than a played
+                                  one
 ``GET  /api/game/<id>``           the current position, as the human may see it
 ``POST /api/game/<id>/action``    play: ``{"index": n}``
 ``POST /api/game/<id>/advance``   play one of the opponent's moves, so it can be watched
@@ -95,8 +98,12 @@ class Handler(BaseHTTPRequestHandler):
                     # only place that knows it. Everything else driving api.Game — tests,
                     # benchmarks, scripts — leaves no trace in games/, and wants the
                     # opponent's whole reply in one call rather than a move at a time.
-                    record_game=True,
+                    # A game reached over HTTP is one a person is playing — unless it is
+                    # a watched one, where both seats are agents and there is no person to
+                    # record. `api.Game` turns pacing on for those anyway.
+                    record_game=not body.get("watch"),
                     paced=True,
+                    watch=body.get("watch"),
                 )
                 return self._send_json(game.view())
             if path.startswith("/api/game/") and path.endswith("/action"):

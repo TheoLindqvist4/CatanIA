@@ -48,6 +48,12 @@ OPPONENTS = {
 }
 RULESETS = {"ranked1v1": RANKED_1V1, "base": BASE_GAME}
 
+#: How fast a watched agent-versus-agent game is played back, in milliseconds per decision.
+#: Five decisions a second — fast enough to get through a 230-decision game in under a
+#: minute, slow enough to follow what each side is doing. Served to the client rather than
+#: hardcoded there, so the pace is one number in one place.
+WATCH_PACE_MS = 200
+
 #: Simulations the AlphaZero champion thinks for per move in the browser. Imported from the
 #: promotion gate rather than chosen here: a win rate belongs to a ``(weights, simulations)``
 #: pair, and a champion measured at one number and played at another is a published figure for
@@ -195,15 +201,22 @@ class Game:
     Args:
         paced: hand the opponent's decisions back one at a time instead of playing its
             whole reply inside :meth:`play`. See :meth:`advance`.
+        watch: nobody is playing — **both** seats are agents and the whole game is
+            watchable one decision at a time. ``watch`` names the agent for seat 1; the
+            usual ``opponent`` still names seat 2, so two different models can be put
+            against each other and observed. Forces ``paced``, because a spectated game
+            that resolved itself in one call would have nothing to watch.
     """
 
     _ids = itertools.count(1)
 
     def __init__(self, opponent=None, rules_name="ranked1v1", seed=None,
-                 record_game=False, paced=False):
+                 record_game=False, paced=False, watch=None):
         opponent = DEFAULT_OPPONENT if opponent is None else opponent
         if opponent not in OPPONENTS:
             raise ValueError(f"unknown opponent {opponent!r}")
+        if watch is not None and watch not in OPPONENTS:
+            raise ValueError(f"unknown agent {watch!r} for the watched seat")
         if rules_name not in RULESETS:
             raise ValueError(f"unknown ruleset {rules_name!r}")
 
@@ -212,8 +225,13 @@ class Game:
         self.rules_name = rules_name
         self.env = CatanEnv(num_players=2, ruleset=RULESETS[rules_name])
         self.opponent = OPPONENTS[opponent](seed)
+        #: The agent sitting in the human's seat when this game is being watched rather than
+        #: played. ``None`` for an ordinary game.
+        self.watcher_name = watch
+        self.watcher = None if watch is None else OPPONENTS[watch](
+            None if seed is None else seed + 1)
         self.log = []
-        self.paced = paced
+        self.paced = paced or watch is not None
         # Off by default for the same reason recording is: a paced game is one somebody is
         # *watching*, and only the HTTP layer knows that. Tests, benchmarks and scripts want
         # the opponent's whole reply in one call, and none of them would ever call
@@ -236,7 +254,11 @@ class Game:
         # so it is the one that turns this on.
 
         self._record(self.info)
-        if not paced:
+        # `self.paced`, not the argument: a watched game forces pacing, and reading the
+        # argument here let one play itself to completion inside the constructor — every
+        # decision belongs to an agent when watching, so the "until it is the human's turn"
+        # loop has no stopping condition.
+        if not self.paced:
             self._let_opponent_play()
 
     # ------------------------------------------------------------------ #
@@ -254,7 +276,10 @@ class Game:
         hidden information somewhere an opponent could read it. The web layer knows whose
         side it is on; the engine deliberately does not.
         """
-        names = {HUMAN: "You", 3 - HUMAN: "Opponent"}
+        # In a watched game there is no "you", so both sides are named after the agent
+        # playing them — which is also the only way to tell two bots apart in the log.
+        names = ({HUMAN: self.watcher_name, 3 - HUMAN: self.opponent_name} if self.watching
+                 else {HUMAN: "You", 3 - HUMAN: "Opponent"})
         for event in info.get("events", ()):
             line = describe_event(event, names)
             if drew is not None and event.kind is EventKind.BOUGHT_DEV                     and event.player == HUMAN:
@@ -263,13 +288,24 @@ class Game:
 
     @property
     def awaiting_opponent(self):
-        """Whether a decision is outstanding and it is not the human's.
+        """Whether a decision is outstanding that the person watching is not going to make.
 
         ``info["player"]`` is the authority rather than the turn order: the game is not
         strictly alternating, and during a discard the decision belongs to whoever is over
         the hand limit.
+
+        In a watched game *every* decision qualifies, because nobody is playing — which is
+        what lets the client's existing "advance until it is your turn" loop drive a whole
+        agent-versus-agent game without knowing anything new.
         """
-        return not self.info["done"] and self.info["player"] != HUMAN
+        if self.info["done"]:
+            return False
+        return self.watching or self.info["player"] != HUMAN
+
+    @property
+    def watching(self):
+        """Whether both seats are agents."""
+        return self.watcher is not None
 
     def _opponent_move(self):
         """Play exactly one of the opponent's decisions.
@@ -281,7 +317,12 @@ class Game:
         if not self.awaiting_opponent:
             return False
         observation = self.env.observe(self.info["player"])
-        action = self.opponent(observation, self.info)
+        # In a watched game each seat has its own agent, so the mover decides which one is
+        # asked. Reading `info["player"]` rather than the turn order matters here as much as
+        # anywhere: during a discard the decision can belong to either side.
+        actor = (self.watcher if self.watching and self.info["player"] == HUMAN
+                 else self.opponent)
+        action = actor(observation, self.info)
         if self.recorder:
             self.recorder.record(self.info, action)
         _, _, _, _, self.info = self.env.step(action)
@@ -331,6 +372,8 @@ class Game:
         """
         if self.info["done"]:
             raise ValueError("the game is over")
+        if self.watching:
+            raise ValueError("this game is being watched, not played")
         if self.info["player"] != HUMAN:
             raise ValueError("it is not your turn")
         if index not in self.info["legal"]:
@@ -431,17 +474,28 @@ def _road_geometry(plan, road):
 # --------------------------------------------------------------------------- #
 
 def view(game):
-    """Everything the human may see, as JSON-ready data."""
+    """Everything the human may see, as JSON-ready data.
+
+    A *watched* game is filtered exactly as a played one is: seat 1's cards are shown and
+    seat 2's are not. That is deliberately no more permissive than the played case — a
+    spectator sees what a seat-1 player would see and nothing else — so the leak tests
+    covering this function cover watching too, without a second rule to keep in step.
+    """
     state, info = game.state, game.info
-    your_turn = not info["done"] and info["player"] == HUMAN
+    your_turn = not info["done"] and info["player"] == HUMAN and not game.watching
 
     return {
         "gameId": game.id,
         "you": HUMAN,
         "opponent": game.opponent_name,
         "rules": game.rules_name,
+        # Both seats are agents: the client should drive the game rather than wait for a
+        # click, and it should pace it so the moves can be followed.
+        "watching": game.watching,
+        "watchedBy": game.watcher_name,
+        "paceMs": WATCH_PACE_MS if game.watching else None,
         "phase": state.phase.name,
-        "phaseHint": _hint(state, info, your_turn),
+        "phaseHint": _hint(state, info, your_turn, game),
         "turn": info["turn"],
         "lastRoll": info["last_roll"],
         "yourTurn": your_turn,
@@ -465,12 +519,24 @@ def view(game):
     }
 
 
-def _hint(state, info, your_turn):
-    """One line telling the player what is being asked of them."""
+def _hint(state, info, your_turn, game=None):
+    """One line telling the player what is being asked of them.
+
+    ``game`` is optional so the many callers that only have a state and an ``info`` keep
+    working; it is passed when the line should name the agents instead of addressing a
+    player, which is the case for a watched game.
+    """
+    watching = game is not None and game.watching
     if info["done"]:
         if info["winner"] is None:
             return "The game ended without a winner."
+        if watching:
+            winner = game.watcher_name if info["winner"] == HUMAN else game.opponent_name
+            return f"{winner} wins."
         return "You win!" if info["winner"] == HUMAN else "The opponent wins."
+    if watching:
+        mover = game.watcher_name if info["player"] == HUMAN else game.opponent_name
+        return f"{mover} is thinking…"
     if not your_turn:
         return "Opponent is thinking…"
     return {
@@ -628,9 +694,9 @@ class Games:
         self._games = {}
 
     def new(self, opponent=None, rules_name="ranked1v1", seed=None, record_game=False,
-            paced=False):
+            paced=False, watch=None):
         game = Game(opponent=opponent, rules_name=rules_name, seed=seed,
-                    record_game=record_game, paced=paced)
+                    record_game=record_game, paced=paced, watch=watch)
         self._games[game.id] = game
         return game
 

@@ -42,12 +42,9 @@ import pathlib
 import torch
 
 from catan import action_space, encoder
+from training.alphazero import layouts
 from training.net import build
-from training.structured_net import CONTEXT_START, StructuredPolicyValueNet
-
-#: The layer whose input width follows ``encoder.SIZE``. The only one.
-CONTEXT_LAYER = "context_mlp.0.weight"
-
+from training.structured_net import StructuredPolicyValueNet
 
 def new_network(width=64, road_width=32, context=128, hops=1, depth=2, rounds=0,
                 trunk=256):
@@ -65,72 +62,135 @@ def new_network(width=64, road_width=32, context=128, hops=1, depth=2, rounds=0,
 # Carrying a checkpoint across an observation change                          #
 # --------------------------------------------------------------------------- #
 
-def insertion_point(old_size, new_size=None):
-    """Where the new observation columns were inserted, as an index into the context vector.
+def _segments(hops):
+    """How each observation-width layer's input is assembled, in order.
 
-    Derived from :data:`catan.encoder.LAYOUT` rather than written down: the growth is
-    located by finding the block whose length accounts for the difference. Returns
-    ``(offset, count)`` in context-vector coordinates, or ``None`` if the difference cannot
-    be explained by exactly one block — in which case the caller must not graft.
+    A block name means "one row of that block"; an integer means that many constant geometry
+    columns; ``"context"`` means the whole un-positional tail. Read straight off
+    :meth:`~training.structured_net.StructuredPolicyValueNet.forward`'s three ``torch.cat``
+    calls, and checked against a real network at test time so the two cannot drift.
     """
-    new_size = encoder.SIZE if new_size is None else new_size
-    grew_by = new_size - old_size
-    if grew_by <= 0:
-        return None
-    for name, span in encoder.LAYOUT.items():
-        if span.stop - span.start != grew_by:
-            continue
-        if span.start < CONTEXT_START:
-            return None                       # a positional block grew; rows change shape
-        return span.start - CONTEXT_START, grew_by
-    return None
+    tile, vertex, road = ["tiles", 1], ["vertices", 2], ["roads", 1]
+    if hops >= 1:
+        tile += ["vertices"]
+        vertex += ["tiles", "vertices", "roads"]
+        road += ["vertices"]
+    if hops >= 2:
+        tile += ["tiles"]
+        vertex += ["tiles", "vertices"]
+        road += ["tiles"]
+    return {
+        "tile_embed.weight": tile,
+        "vertex_embed.weight": vertex,
+        "road_embed.weight": road,
+        "context_mlp.0.weight": ["context"],
+    }
+
+
+def _positional(layout):
+    return sum(layout[name][0] * layout[name][1]
+               for name in ("tiles", "vertices", "roads"))
+
+
+def _input_map(segments, old, new):
+    """For each input column of a layer, the old column it came from, or ``-1``.
+
+    Walks the segments once, keeping a cursor into the *old* layer's inputs. That is the
+    whole trick: the new layer is wider, but the segments appear in the same order, so the
+    old position of every surviving column is just "how much old input came before it".
+    """
+    mapping, cursor = [], 0
+    for segment in segments:
+        if isinstance(segment, int):                       # constant geometry columns
+            mapping.extend(range(cursor, cursor + segment))
+            cursor += segment
+        elif segment == "context":
+            columns = layouts.column_map(old, new)
+            old_start = _positional(old)
+            mapping.extend(-1 if c < 0 else c - old_start + cursor
+                           for c in columns[_positional(new):])
+            cursor += layouts.total(old) - old_start
+        else:                                              # one row of a repeated block
+            old_features = old.get(segment, (0, 0))[1]
+            mapping.extend(cursor + f if f < old_features else -1
+                           for f in range(new[segment][1]))
+            cursor += old_features
+    return mapping
+
+
+def _gather(weight, mapping):
+    """``weight`` rebuilt so column *i* is old column ``mapping[i]``, or zeros.
+
+    Zeros are what make this safe rather than a guess: a zero column contributes nothing, so
+    the rebuilt layer computes exactly the function it did on the features it already had,
+    and the new ones start neutral and are learned.
+    """
+    out = torch.zeros(weight.shape[0], len(mapping),
+                      dtype=weight.dtype, device=weight.device)
+    keep = [i for i, source in enumerate(mapping) if source >= 0]
+    if keep:
+        out[:, keep] = weight[:, [mapping[i] for i in keep]]
+    return out
 
 
 def graft(state_dict, config):
-    """Widen a checkpoint's context layer to the current observation, with zero columns.
+    """Widen a checkpoint's observation-width layers to the current layout, with zero columns.
+
+    Handles blocks that were **appended to** — which is the only shape a change to this
+    observation is allowed to take, per the "append, never insert" rule in ``CLAUDE.md``.
+    A block whose features were reordered would need a different and much more careful
+    function; this refuses instead of pretending.
 
     Args:
         state_dict: the stored weights.
-        config: the stored config, which carries the ``obs_size`` they were trained at.
+        config: the stored config. Carries ``layout`` on checkpoints written since that
+            existed, and otherwise is looked up by ``obs_size`` in
+            :data:`training.alphazero.layouts.HISTORICAL`.
 
     Returns:
-        ``(state_dict, inserted)`` — a new dict safe to load into a network built at the
-        current :data:`catan.encoder.SIZE`, and how many columns were added. ``inserted``
+        ``(state_dict, inserted)`` — weights safe to load at the current
+        :data:`catan.encoder.SIZE`, and how many columns were added in total. ``inserted``
         is 0 when the checkpoint already matches.
 
     Raises:
-        ValueError: when the shapes cannot be reconciled by inserting one block. Loud
-            rather than approximate: a checkpoint whose layout is not understood should be
-            retrained, not bent into shape.
+        ValueError: when the old layout cannot be known, or a block shrank. Loud rather than
+            approximate: a checkpoint bent into the wrong shape loads, runs, and plays
+            nonsense.
     """
-    old_size = config.get("obs_size")
-    if old_size == encoder.SIZE:
+    if config.get("obs_size") == encoder.SIZE:
         return dict(state_dict), 0
     if config.get("kind") != "structured":
         raise ValueError(f"cannot graft a {config.get('kind', 'flat')!r} checkpoint: only "
-                         f"the structured network has a single observation-width layer")
+                         f"the structured network has observation-width layers this "
+                         f"function knows how to widen")
 
-    where = insertion_point(old_size)
-    if where is None:
+    old = layouts.resolve(config)
+    if old is None:
         raise ValueError(
-            f"checkpoint was trained at obs_size={old_size} and the encoder is now "
-            f"{encoder.SIZE}; the difference of {encoder.SIZE - old_size} does not match "
-            f"exactly one non-positional block, so where the new floats belong is unknown"
+            f"checkpoint was trained at obs_size={config.get('obs_size')} and carries no "
+            f"layout, and that size is not in layouts.HISTORICAL — so which block grew, and "
+            f"by how much, is unknown"
         )
-    offset, count = where
+    new = layouts.signature()
 
     grafted = dict(state_dict)
-    weight = grafted[CONTEXT_LAYER]
-    if weight.shape[1] + count != encoder.SIZE - CONTEXT_START:
-        raise ValueError(
-            f"{CONTEXT_LAYER} is {tuple(weight.shape)}, which does not become the expected "
-            f"{encoder.SIZE - CONTEXT_START} inputs by inserting {count} columns"
-        )
-    zeros = torch.zeros(weight.shape[0], count, dtype=weight.dtype, device=weight.device)
-    grafted[CONTEXT_LAYER] = torch.cat(
-        [weight[:, :offset], zeros, weight[:, offset:]], dim=1
-    )
-    return grafted, count
+    inserted = 0
+    for name, segments in _segments(config.get("hops", 1)).items():
+        weight = grafted.get(name)
+        if weight is None:
+            continue
+        mapping = _input_map(segments, old, new)
+        if len(mapping) == weight.shape[1]:
+            continue                                       # this layer did not change
+        if weight.shape[1] != sum(1 for m in mapping if m >= 0):
+            raise ValueError(
+                f"{name} has {weight.shape[1]} inputs but the recorded layout accounts for "
+                f"{sum(1 for m in mapping if m >= 0)} — the layout does not describe this "
+                f"checkpoint"
+            )
+        grafted[name] = _gather(weight, mapping)
+        inserted += sum(1 for m in mapping if m < 0)
+    return grafted, inserted
 
 
 def load_for_alphazero(path, value_activation="tanh"):

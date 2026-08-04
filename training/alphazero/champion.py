@@ -77,14 +77,39 @@ def load(path=None, simulations=CHAMPION_SIMULATIONS, temperature=0.0, seed=None
     path = pathlib.Path(CHAMPION if path is None else path)
     if not path.is_file():
         return None
-    try:
-        from training.alphazero.agent import MCTSAgent
+    from training.alphazero.agent import MCTSAgent
 
+    agent = None
+    try:
         agent = MCTSAgent.load(path, simulations=simulations, temperature=temperature,
                                seed=seed)
     except Exception:
-        return None
-    if agent.net.obs_size != encoder.SIZE or agent.net.num_actions != action_space.NUM_ACTIONS:
+        # Falls through to the graft. The network's constructor *raises* when `obs_size`
+        # does not match the encoder, so an observation change lands here rather than
+        # producing a loaded-but-wrong-shaped model — which is why the graft cannot be
+        # attempted only after a successful load.
+        agent = None
+
+    if agent is None or agent.net.obs_size != encoder.SIZE:
+        # The observation changed under a champion promoted against the old one. That used
+        # to mean "offer the heuristic instead", and it is how both interfaces silently lost
+        # their learned opponent once already. It does not have to: every change to this
+        # observation appends, so `network.graft` gives the new columns zero weight and the
+        # result computes *exactly* the function that was measured. Verified rather than
+        # asserted — this champion scored 74.7% before the change and 75.6% after, over 400
+        # and 200 games. See ``docs/decisions/0024-what-a-placement-can-see.md``.
+        try:
+            from training.alphazero.network import load_for_alphazero
+
+            net, _ = load_for_alphazero(path)
+            agent = MCTSAgent(net, simulations=simulations, temperature=temperature,
+                              seed=seed)
+        except Exception:
+            return None
+
+    if agent.net.num_actions != action_space.NUM_ACTIONS:
+        return None                       # the action space moved; nothing can save that
+    if agent.net.obs_size != encoder.SIZE:
         return None
     return agent
 

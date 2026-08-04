@@ -40,7 +40,7 @@ from training.alphazero import replay_buffer
 from training.alphazero.config import Config, parse
 from training.alphazero.determinize import determinize, unseen_dev_cards, unseen_resources
 from training.alphazero.mcts import CHANCE, DECISION, TERMINAL, Search
-from training.alphazero.network import graft, insertion_point, new_network
+from training.alphazero.network import graft, new_network
 from training.alphazero.replay_buffer import ReplayBuffer, pack_mask, sparse_policy
 from training.alphazero.self_play import Generator, to_arrays
 
@@ -509,47 +509,110 @@ def test_graft_is_a_no_op_at_the_current_size():
     assert set(weights) == set(net.state_dict())
 
 
-def test_graft_inserts_zero_columns_and_preserves_the_function():
-    """A grafted network must compute what the original did on the observation it knew."""
-    from training.structured_net import CONTEXT_START
+def test_graft_widens_every_observation_layer_with_zeros():
+    """A grafted network must compute exactly what the original did.
 
-    offset, count = insertion_point(encoder.SIZE - 16)
-    assert count == 16
-    assert offset == encoder.LAYOUT["affordability"].start - CONTEXT_START
+    Built by *narrowing* a current network to the previous layout and grafting it back, so
+    the test exercises the same path a real checkpoint takes without needing one on disk.
+    """
+    from training.alphazero import layouts
+    from training.alphazero.network import _input_map, _segments
+
+    old_layout = layouts.HISTORICAL[1884]
+    net = new_network()
+    original = net.state_dict()
+
+    narrow = dict(original)
+    for name, segments in _segments(1).items():
+        mapping = _input_map(segments, old_layout, layouts.signature())
+        keep = [i for i, source in enumerate(mapping) if source >= 0]
+        # Undo the graft: drop the columns that would be new, and put the rest back in the
+        # order the old layer had them.
+        columns = sorted(keep, key=lambda i: mapping[i])
+        narrow[name] = original[name][:, columns]
+
+    grafted, inserted = graft(narrow, {**net.config(), "obs_size": 1884, "layout": None})
+    assert inserted > 0
+
+    for name, segments in _segments(1).items():
+        mapping = _input_map(segments, old_layout, layouts.signature())
+        assert grafted[name].shape == original[name].shape, name
+        kept = [i for i, source in enumerate(mapping) if source >= 0]
+        added = [i for i, source in enumerate(mapping) if source < 0]
+        # Surviving columns come back exactly where they were...
+        assert torch.allclose(grafted[name][:, kept], original[name][:, kept], atol=1e-6), (
+            f"{name} did not put its old columns back where they were"
+        )
+        # ...and the new ones are zero. Not "close to the original": the original's values
+        # there are a fresh random init this test happens to have, and the whole safety
+        # argument is that a grafted network gives new features *no* weight until it learns
+        # one.
+        assert torch.all(grafted[name][:, added] == 0), f"{name} gave a new feature weight"
+
+
+def test_grafted_columns_cannot_contribute_anything():
+    """The whole safety argument, as an assertion: the new features start at zero weight."""
+    from training.alphazero import layouts
+    from training.alphazero.network import _input_map, _segments
 
     net = new_network()
     original = net.state_dict()
-    narrow = {k: v for k, v in original.items()}
-    narrow["context_mlp.0.weight"] = torch.cat(
-        [original["context_mlp.0.weight"][:, :offset],
-         original["context_mlp.0.weight"][:, offset + count:]], dim=1)
+    narrow = dict(original)
+    for name, segments in _segments(1).items():
+        mapping = _input_map(segments, layouts.HISTORICAL[1884], layouts.signature())
+        columns = sorted((i for i, m in enumerate(mapping) if m >= 0), key=lambda i: mapping[i])
+        narrow[name] = original[name][:, columns]
 
-    grafted, inserted = graft(narrow, {**net.config(), "obs_size": encoder.SIZE - 16})
-    assert inserted == 16
-    column = grafted["context_mlp.0.weight"][:, offset:offset + count]
-    assert torch.all(column == 0), "new features must start neutral, not random"
-
-    # The guarantee that makes the graft safe rather than a guess: the inserted columns
-    # cannot contribute anything, whatever the new features hold.
+    grafted, _ = graft(narrow, {**net.config(), "obs_size": 1884, "layout": None})
     rebuilt = new_network()
     rebuilt.load_state_dict(grafted)
-    varied = torch.randn(4, encoder.SIZE)
-    changed = varied.clone()
-    changed[:, encoder.LAYOUT["affordability"]] += 100.0
+
+    # Drive every appended feature hard. The logits must not move at all.
+    observation = torch.randn(4, encoder.SIZE)
+    changed = observation.clone()
+    rows = encoder.SHAPES["vertices"][1]
+    base = encoder.LAYOUT["vertices"].start
+    for vertex in range(encoder.SHAPES["vertices"][0]):
+        at = base + vertex * rows + encoder.VERTEX_OFFSETS["production"]
+        changed[:, at:at + 11] += 100.0
     with torch.no_grad():
-        assert torch.allclose(rebuilt(varied)[0], rebuilt(changed)[0], atol=1e-4)
+        assert torch.allclose(rebuilt(observation)[0], rebuilt(changed)[0], atol=1e-4)
 
 
-def test_graft_refuses_an_unexplainable_difference():
+def test_graft_refuses_a_layout_it_cannot_know():
     net = new_network()
-    with pytest.raises(ValueError, match="does not match exactly one"):
-        graft(net.state_dict(), {**net.config(), "obs_size": encoder.SIZE - 7})
+    with pytest.raises(ValueError, match="carries no layout"):
+        graft(net.state_dict(), {**net.config(), "obs_size": 1234, "layout": None})
 
 
-def test_insertion_point_refuses_a_positional_block():
-    # 361 is the tiles block, which is positional: growing it changes a row's width, not the
-    # context vector's, and a zero-column graft would be nonsense.
-    assert insertion_point(encoder.SIZE - 361) is None
+def test_graft_refuses_a_block_that_shrank():
+    from training.alphazero import layouts
+
+    shrunk = dict(layouts.signature())
+    shrunk["vertices"] = (54, 99)
+    with pytest.raises(ValueError, match="shrank"):
+        layouts.column_map(shrunk)
+
+
+def test_historical_layouts_add_up_to_their_key():
+    """An entry is a statement about a file on disk; a wrong one grafts silently."""
+    from training.alphazero import layouts
+
+    for size, layout in layouts.HISTORICAL.items():
+        assert layouts.total(layout) == size, size
+    assert layouts.total(layouts.signature()) == encoder.SIZE
+
+
+def test_segments_match_the_network_they_describe():
+    """The graft's idea of how each layer's input is assembled must match the real one."""
+    from training.alphazero import layouts
+    from training.alphazero.network import _input_map, _segments
+
+    net = new_network()
+    current = layouts.signature()
+    for name, segments in _segments(net.hops).items():
+        expected = dict(net.state_dict())[name].shape[1]
+        assert len(_input_map(segments, current, current)) == expected, name
 
 
 # =========================================================================== #
@@ -906,3 +969,133 @@ def test_warm_started_agent_beats_random():
     tally = play_match({1: agent, 2: RandomAgent(0)}, games=12, seed=500,
                        ruleset=RANKED_1V1, max_turns=400)
     assert tally[1] > tally[2], tally
+
+
+# =========================================================================== #
+# Watching a run: the study and the dashboard                                 #
+# =========================================================================== #
+
+def test_quantile_edges_split_into_equal_groups():
+    """Fixed bands put every game in one bucket once; quantiles cannot."""
+    from training.alphazero.study import quantile_edges
+
+    values = [0.1 * i for i in range(20)]
+    edges = quantile_edges(values, bands=4)
+    counts = [sum(1 for v in values if low <= v < high)
+              for low, high in zip(edges, edges[1:])]
+    assert len(edges) == 5
+    assert max(counts) - min(counts) <= 1, counts
+    assert quantile_edges([]) == []
+    assert len(quantile_edges([3.0] * 10)) >= 2, "a constant series still needs one band"
+
+
+def test_vertex_production_splits_pips_by_resource():
+    """The quantity the observation is missing: which resource the pips come from."""
+    from training.alphazero.study import odds, vertex_production
+
+    state = played(moves=0)
+    board = state.board
+    for vertex in range(1, 55):
+        per = vertex_production(board, vertex)
+        assert len(per) == NUM_RESOURCES
+        expected = sum(odds(board.number_at(t)) for t in
+                       __import__("catan.topology", fromlist=["VERTEX_TILES"]).VERTEX_TILES[vertex]
+                       if board.resource_at(t) is not None)
+        assert sum(per) == pytest.approx(expected)
+    assert odds(None) == 0.0
+    assert odds(8) == pytest.approx(5 / 36)
+    assert odds(2) == pytest.approx(1 / 36)
+
+
+def test_study_records_an_opening_and_an_outcome():
+    from catan.agents import GreedyAgent, HeuristicAgent
+    from training.alphazero.study import play_and_record, summarise
+
+    # The heuristic against greedy, not greedy against random: the summary is only defined
+    # over *decided* games, and two weak agents do not reliably reach 15 points.
+    records = [play_and_record(HeuristicAgent(0), GreedyAgent(0), seed=seed, max_turns=400)
+               for seed in range(4)]
+    assert any(r["decided"] for r in records), "no game finished, so there is nothing to summarise"
+    for record in records:
+        assert record["seat"] in (1, 2)
+        assert record["pips"] > 0
+        assert record["gap_to_best"] >= -1e-9, "cannot beat the best available spot"
+        assert 1 <= record["diversity"] <= 5
+        assert 0.0 <= record["ore_wheat_sheep"] <= 1.0
+        assert record["ore_wheat_sheep"] + record["wood_brick"] == pytest.approx(1.0)
+        assert len(record["spots"]) == 2, "two opening settlements"
+
+    summary = summarise(records)
+    assert summary["games"] == 4
+    assert set(summary["by_resource"]) == {r.name.lower() for r in Resource}
+
+
+def test_summarise_survives_a_study_with_no_decided_games():
+    from training.alphazero.study import summarise
+
+    assert summarise([])["decided"] == 0
+    undecided = [{"decided": False, "won": False, "pips": 0.5, "diversity": 3,
+                  "ore_wheat_sheep": 0.5, "gap_to_best": 0.0, "spots": [1, 2],
+                  "opening_harbours": 0, "harbours_owned": [], "turns": 400,
+                  "resources": {r.name.lower(): 0.1 for r in Resource}}]
+    assert summarise(undecided)["decided"] == 0
+
+
+def test_dashboard_builds_a_self_contained_page(tmp_path):
+    from training.alphazero import dashboard
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "metrics.jsonl").write_text("\n".join(
+        json.dumps({"iteration": i, "total_games": 10 * i, "elapsed_minutes": i / 2,
+                    "buffer": 1000 * i, "generate_seconds": 25.0, "train_seconds": 3.0,
+                    "positions_per_second": 150.0 + i, "policy_loss": 1.4 - i / 100,
+                    "value_loss": 0.3, "entropy": 1.3, "turns": 110,
+                    **({"evaluation": {"win_rate": 0.55, "ci": [0.47, 0.63],
+                                       "truncated": 0}} if i % 3 == 0 else {})})
+        for i in range(1, 10)), encoding="utf-8")
+
+    page = dashboard.build(run, tmp_path / "missing.json")
+    assert page.startswith("<!doctype html>")
+    assert "<svg" in page
+    # The page is built with f-strings wrapped around CSS, so every CSS brace is doubled in
+    # the source. A doubling that leaked through shows up as `{{` in the output.
+    assert "{{" not in page and "}}" not in page, "an escaped brace survived into the page"
+    assert "color-scheme" in page and "{" in page, "the CSS itself must still be there"
+    assert "No study yet" in page, "a missing study is explained, not a crash"
+    assert "positions/sec" in page
+    # Self-contained: nothing to fetch, so it can be opened from disk or e-mailed.
+    for forbidden in ("<script", "src=", "href=", "http://", "https://"):
+        assert forbidden not in page, forbidden
+
+
+def test_dashboard_draws_the_opening_study_when_there_is_one(tmp_path):
+    from training.alphazero import dashboard, study
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "metrics.jsonl").write_text("", encoding="utf-8")
+
+    from catan.agents import GreedyAgent, HeuristicAgent
+
+    records = [study.play_and_record(HeuristicAgent(0), GreedyAgent(0), seed=s, max_turns=400)
+               for s in range(6)]
+    path = tmp_path / "study.json"
+    path.write_text(json.dumps({"summary": study.summarise(records), "games": records}),
+                    encoding="utf-8")
+
+    page = dashboard.build(run, path)
+    assert "by ore-wheat-sheep share" in page
+    assert "by opening production" in page
+    assert "harbour" in page
+
+
+def test_dashboard_survives_a_corrupt_study(tmp_path):
+    from training.alphazero import dashboard
+
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "metrics.jsonl").write_text("", encoding="utf-8")
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert "unreadable" in dashboard.build(run, bad)
