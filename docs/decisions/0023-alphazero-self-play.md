@@ -487,6 +487,32 @@ So the 72.8% was an inflated draw, and the model with the most training behind i
 stronger player all along. **When candidates are within each other's intervals, rank them
 against each other, not against a third party.**
 
+### The gate refusing a better-looking model, and why that is the right answer
+
+A two-hour run produced `iter_168`, which measured **better than the reigning champion against
+both fixed opponents** and was still refused:
+
+| rung | candidate | reigning champion |
+|---|---:|---:|
+| the fixed heuristic | **80.6%** [76.4, 84.2] | 74.4% [69.8, 78.4] |
+| the PPO champion | **77.6%** [73.3, 81.5] | 76.1% [71.6, 80.0] |
+| **head to head** | **51.8%** [46.8, 56.8] | — |
+
+Six points better against the yardstick, and a coin flip against the champion. The gate's rule
+is the head-to-head lower bound clearing 50%, so it refused.
+
+That is non-transitivity, and it is exactly what the rung exists to catch — but it is worth
+being clear about which way the conservatism cuts. The rule protects against a candidate that
+beats the champion by learning its habits; here the candidate is *not worse* by any measure and
+is probably better by one. Refusing costs a likely-small improvement. Promoting on the
+heuristic rung alone would have thrown away the property that makes a self-play ladder mean
+anything.
+
+More games would not settle it: at 51.8%, a thousand games gives about [48.7, 54.9] and still
+includes 50%. The two models are close to equal in a direct match. **When this happens, the
+answer is more training, not a longer measurement** — or a deliberate, recorded override, which
+is what `promote --force` is for and why it writes `"forced": true` into the record.
+
 ---
 
 ## Consequences
