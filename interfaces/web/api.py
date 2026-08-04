@@ -168,6 +168,34 @@ RESOURCE_NAMES = [resource.name.lower() for resource in Resource]
 RESOURCE_IMAGES = {
     resource.name.lower(): TILE_IMAGES[resource] for resource in Resource
 }
+
+#: The resource *card* art — a picture of the card you hold, for hands and the bank supply,
+#: where the tile art used to stand in for it. This set is named after the resource, so the
+#: mapping happens to be an identity; it is served anyway, for the reason the tile one is.
+#: Which file pictures a resource is the server's business, and an identity today is not a
+#: promise for the next art set.
+CARD_IMAGES = {
+    Resource.WOOD: "wood", Resource.BRICK: "brick", Resource.SHEEP: "sheep",
+    Resource.WHEAT: "wheat", Resource.ORE: "ore",
+}
+RESOURCE_CARDS = {
+    resource.name.lower(): CARD_IMAGES[resource] for resource in Resource
+}
+
+#: How a card is shaped, width over height. All five are cropped to the same 626x988 box, so
+#: one ratio sizes them all. Served rather than written in the browser for the same reason
+#: the sprite scales are — and because a card drawn to a guessed shape is a stretched card.
+#: ``tests/test_web.py`` measures it against the files.
+CARD_ASPECT = 626 / 988
+
+#: Sprites the browser has to size in both dimensions, width over height. The PNG renderer
+#: never needs these — it fits by width and the file supplies the rest — but an SVG <image>
+#: takes both, and a ratio guessed in JavaScript is a stretched sprite.
+ASPECTS = {
+    "card": CARD_ASPECT,
+    "robber": render.ROBBER_ASPECT,
+}
+
 DEV_CARD_NAMES = [card.name.lower() for card in DevCard]
 
 #: Action types chosen from a panel rather than by clicking the board.
@@ -417,6 +445,11 @@ def geometry(hex_width=110):
         # renderer, so the board on screen and the board in a saved image use one asset set.
         "art": {
             "resources": RESOURCE_IMAGES,
+            # The card art the panels draw a hand with, and the shape it is drawn at. The
+            # board and a hand picture the same resource differently — a wood tile is a
+            # forest, a wood card is one tree — so they are two mappings, not one.
+            "cards": RESOURCE_CARDS,
+            "aspects": ASPECTS,
             "colours": {
                 slot + 1: colour for slot, colour in enumerate(RENDER_COLOURS)
             },
@@ -436,6 +469,7 @@ def geometry(hex_width=110):
             # that is not in the middle of the hex — see render.NUMBER_OFFSET.
             "offsets": {
                 "number": render.NUMBER_OFFSET,
+                "robber": render.ROBBER_OFFSET,
             },
         },
         "width": plan.width,

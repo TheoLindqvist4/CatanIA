@@ -222,6 +222,90 @@ def test_the_number_token_fits_inside_the_blank_panel():
         assert drawn[1] <= panel[1], f"{number}.png is taller than the panel"
 
 
+def _robber_sprite():
+    from PIL import Image
+
+    return Image.open(render_module.IMAGES / "robber" / "robber.png").convert("RGBA")
+
+
+def test_the_robber_sprite_is_the_shape_the_client_is_told():
+    """The browser is served this ratio because an SVG <image> needs a width *and* a height,
+    where this renderer fits by width and takes the rest from the file. Two statements of one
+    shape, so the served one is measured against the art rather than typed next to it."""
+    sprite = _robber_sprite()
+    assert render_module.ROBBER_ASPECT == pytest.approx(sprite.width / sprite.height)
+
+
+def test_the_robber_has_a_transparent_background_and_no_margin():
+    """It is pasted over a finished tile, so any background it carries is a white box on the
+    board. It arrived as a 1920x1080 render on flat white; the mask is *not* enclosed by the
+    silhouette — its tips reach the edge of the figure — so keying every white pixel would
+    have taken the mask with it. What is left has to be transparent at the corners, opaque
+    where the figure is, still white where the mask is, and cropped tight to its own ink."""
+    sprite = _robber_sprite()
+    alpha = sprite.getchannel("A")
+    width, height = sprite.size
+
+    assert alpha.getbbox() == (0, 0, width, height), "the sprite has a transparent margin"
+    for corner in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        assert alpha.getpixel(corner) == 0, f"{corner} is not transparent"
+
+    assert alpha.histogram()[0] > 0, "nothing was cut away"
+
+    # The mask: light pixels that survived. Keying on colour alone would have removed them.
+    pixels = sprite.load()
+    mask = sum(1 for y in range(height) for x in range(width)
+               if pixels[x, y][3] > 0 and pixels[x, y][0] > 200)
+    assert mask > 1000, "the robber lost its mask to the background cut"
+
+
+def test_the_robber_stands_in_the_clear_band_of_its_tile():
+    """ROBBER_SCALE and ROBBER_OFFSET are one decision, and this is the constraint behind it.
+
+    Below the robber is the number token, and which number is blocked is the one thing a
+    player needs from a robbed tile — the grey ellipse this replaced sat centred and covered
+    the token's top third. Above it is a settlement on the tile's top corner, which covered
+    the hat and the mask when the robber was measured a size larger, leaving a black blob
+    with nothing robber-like about it.
+
+    So both ends are load-bearing, and both are measured from the art rather than trusted:
+    the constraint is between four files and four constants, every one of them a number
+    someone may reasonably want to change.
+
+    A city is deliberately not in here. It is bigger than the band allows and clips the top
+    of the hat; see ROBBER_OFFSET for why that is the accepted end of the trade.
+    """
+    from PIL import Image
+
+    over_height = render_module.WIDTH_OVER_HEIGHT          # hex widths per hex height
+
+    def sprite_height(image, scale):
+        """``image`` drawn ``scale`` hex widths across, as a fraction of one hex height."""
+        return scale * image.height / image.width * over_height
+
+    # All in fractions of one hex height, measured from the tile's centre.
+    robber = sprite_height(_robber_sprite(), render_module.ROBBER_SCALE)
+    head = render_module.ROBBER_OFFSET - robber / 2
+    foot = render_module.ROBBER_OFFSET + robber / 2
+
+    assert head > -0.5, "the robber overflows the top of its own tile"
+
+    for number in list(range(2, 7)) + list(range(8, 13)):
+        token = Image.open(render_module.IMAGES / "numbers" / f"{number}.png").convert("RGBA")
+        ink = token.getchannel("A").getbbox()
+        ink_top = ((ink[1] - token.height / 2) / token.width * render_module.NUMBER_SCALE
+                   * over_height + render_module.NUMBER_OFFSET)
+        assert ink_top > foot, (
+            f"the robber covers the {number} token by {foot - ink_top:.4f} of a hex height")
+
+    for colour in render_module.PLAYER_COLOURS:
+        settlement = Image.open(render_module.IMAGES / "settlements" / f"{colour}.png")
+        # Centred on the corner, which is half a hex height above the tile's centre.
+        hangs_to = -0.5 + sprite_height(settlement, render_module.SETTLEMENT_SCALE) / 2
+        assert hangs_to < head, (
+            f"a {colour} settlement covers the robber's head by {hangs_to - head:.4f}")
+
+
 # =========================================================================== #
 # RENDERING                                                                   #
 # =========================================================================== #

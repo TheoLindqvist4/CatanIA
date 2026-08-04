@@ -102,8 +102,10 @@ svg { width: 100%; height: auto; display: block; }
 #log li.mine { color: #e8e8ea; }
 
 /* ------------------------------------------------------------------ cards */
-/* Resources are shown as the pictures from the board rather than as words, so a hand can
-   be read at a glance. The tile art doubles as the card art: a wood card is the forest. */
+/* Resources are shown as their cards rather than as words, so a hand can be read at a
+   glance. The card art is its own set, portrait like a real card — the board's tile art
+   stood in for it until there was one, and a squared-off forest read as a tile, not a
+   card. Its proportions come from the server; nothing here may assume them. */
 
 .hand {
   display: flex;
@@ -117,16 +119,15 @@ svg { width: 100%; height: auto; display: block; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 5px;
+  border-radius: 4px;
   overflow: hidden;
   background: #10202f;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
 }
 
-.chip .res-icon {
+.chip .res-card {
   display: block;
-  object-fit: cover;
-  border-radius: 5px;
+  border-radius: 4px;
 }
 
 /* The count sits on the card, like pips on a playing card. */
@@ -150,11 +151,13 @@ svg { width: 100%; height: auto; display: block; }
 }
 
 /* An opponent's hand is hidden information: the count is public, the composition is not,
-   so it is drawn as that many card backs. */
+   so it is drawn as that many card backs. Shaped by the served ratio rather than by a pair
+   of pixel counts here — a back that is not the shape of a card gives the row away as a
+   drawing, and two hands in one panel should be the same deck. */
 .hidden-hand .card-back {
-  width: 13px;
-  height: 22px;
-  border-radius: 3px;
+  height: var(--card-height);
+  aspect-ratio: var(--card-aspect);
+  border-radius: 4px;
   background: repeating-linear-gradient(45deg, #7b3f26, #7b3f26 3px, #6a3520 3px, #6a3520 6px);
   border: 1px solid #4a2415;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -168,10 +171,11 @@ svg { width: 100%; height: auto; display: block; }
 }
 
 /* Inline pictures inside a button label, e.g. "trade 4 wheat for 1 ore". */
-button .res-icon {
-  vertical-align: -3px;
-  margin-right: 2px;
+button .res-card {
+  vertical-align: -6px;
+  margin-right: 3px;
   border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 /* Painted pieces sit better with a little separation from the board underneath. */

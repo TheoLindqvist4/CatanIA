@@ -51,13 +51,33 @@ const scale = (name) => state.geometry.art.scales[name];
  *  differently is a divergence nobody notices until they compare a screenshot to the game. */
 const offset = (name) => state.geometry.art.offsets[name];
 
-/** Asset file name for a resource. The art set calls wheat "weat" and ore "stone". */
-const resourceImage = (name) => state.geometry.art.resources[name] || name;
+/** A sprite's own proportions, width over height. The PNG renderer scales by width alone and
+ *  lets the file supply the rest; an SVG <image> takes both, so the ratio is served rather
+ *  than written here, where it would be a guess at the shape of a file this never opens. */
+const aspect = (name) => state.geometry.art.aspects[name];
 
-/** A small picture of a resource, as an <img> for the side panels. */
-function resourceIcon(name, size) {
-  return `<img class="res-icon" src="/images/tiles/${resourceImage(name)}.png"` +
-         ` alt="${name}" title="${name}" width="${size}" height="${size}">`;
+/** Asset file name for a resource *card*, which is a different picture from the tile: the
+ *  board shows a forest, the card in your hand shows one tree. Served, like every other
+ *  asset name, so the client never has to know how a file is spelled. */
+const cardImage = (name) => state.geometry.art.cards[name] || name;
+
+/** Does this word name a resource? Asked of every word in a button label, to illustrate the
+ *  ones that do — so it has to be the served list rather than one written here. */
+const isResource = (name) => Boolean(state.geometry.art.cards[name]);
+
+/** How tall a resource card is drawn: in a hand or the bank supply, and inline in a button
+ *  label, where it has to sit in a line of text without setting the line height. */
+const CARD_HEIGHT = { hand: 46, inline: 21 };
+
+/** A picture of a resource card, as an <img> for the side panels.
+ *
+ *  Only the height is chosen here; the width follows from the art's own proportions, which
+ *  the server sends. Passing both would be this file's own guess at the shape of a file it
+ *  cannot see, and a card at the wrong ratio is a stretched card. */
+function resourceCard(name, height) {
+  const width = Math.round(height * aspect("card"));
+  return `<img class="res-card" src="/images/ressources/${cardImage(name)}.png"` +
+         ` alt="${name}" title="${name}" width="${width}" height="${height}">`;
 }
 
 /** How a development card reads on screen, and whether it can be played at all. */
@@ -108,10 +128,10 @@ function devChip(meta, count, waiting, why) {
          `${count > 1 ? `<b>${count}</b>` : ""}</span>`;
 }
 
-/** A resource count as a picture with a number on it, rather than "wood 3". */
+/** A resource count as the card itself with a number on it, rather than "wood 3". */
 function resourceChip(name, count, muted) {
   return `<span class="chip${muted ? " chip-empty" : ""}" title="${name}: ${count}">` +
-         `${resourceIcon(name, 22)}<b>${count}</b></span>`;
+         `${resourceCard(name, CARD_HEIGHT.hand)}<b>${count}</b></span>`;
 }
 
 /* ---------------------------------------------------------------- server */
@@ -294,13 +314,18 @@ function drawBoard() {
 
   drawHarbours(svg);
 
-  // robber
+  // The robber, standing above the number token rather than over it — see
+  // render.ROBBER_OFFSET, which is why the offset is served rather than assumed.
   const robber = geometry.tiles.find((t) => t.id === view.robber);
   if (robber) {
-    const r = geometry.hexWidth * scale("robber") / 2;
-    el("ellipse", {
-      cx: robber.x, cy: robber.y, rx: r * 0.85, ry: r * 1.2,
-      fill: "#26262b", stroke: "#0e0e12", "stroke-width": 2,
+    const width = geometry.hexWidth * scale("robber");
+    const height = width / aspect("robber");
+    el("image", {
+      href: "/images/robber/robber.png",
+      x: robber.x - width / 2,
+      y: robber.y - height / 2 + geometry.hexHeight * offset("robber"),
+      width, height,
+      class: "piece",
     }, svg);
   }
 
@@ -537,8 +562,8 @@ function drawPanel() {
       .split(" ")
       .map((word) => {
         const name = word.toLowerCase();
-        return state.geometry.art.resources[name]
-          ? `${resourceIcon(name, 16)}${word}`
+        return isResource(name)
+          ? `${resourceCard(name, CARD_HEIGHT.inline)}${word}`
           : word;
       })
       .join(" ");
@@ -618,6 +643,13 @@ function fillOpponents(available) {
 
 async function start() {
   state.geometry = await getJSON("/api/geometry");
+  // The stylesheet draws an opponent's card backs, the one card here not coming from a
+  // file. Handing it the ratio and the height leaves it nothing to guess: two hands in one
+  // panel have to be the same deck, and a back sized by its own pair of pixel counts stops
+  // matching the moment either of these changes.
+  const style = document.documentElement.style;
+  style.setProperty("--card-aspect", aspect("card"));
+  style.setProperty("--card-height", `${CARD_HEIGHT.hand}px`);
   fillOpponents(state.geometry.opponents);
   // Not `newGame` itself: it now waits for the opponent, so a failure part way through is
   // a rejected promise the click handler would drop on the floor.

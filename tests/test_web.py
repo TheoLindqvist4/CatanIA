@@ -525,6 +525,8 @@ def request(base, path, payload=None):
     ("/app/app.js", "text/javascript"),
     ("/app/app.css", "text/css"),
     ("/images/tiles/wood.png", "image/png"),
+    ("/images/ressources/wood.png", "image/png"),
+    ("/images/robber/robber.png", "image/png"),
 ])
 def test_static_files_are_served(server, path, content_type):
     status, body, headers = request(server, path)
@@ -666,6 +668,19 @@ def test_where_the_number_token_goes_comes_from_the_renderer():
     assert "art.offsets" in client_code(), "the client must be told, not guess"
 
 
+def test_where_the_robber_stands_comes_from_the_renderer():
+    """Its scale and offset are one design decision, not two: together they are what keeps
+    the robber off the number it blocks. ``tests/test_render.py`` measures that against the
+    art; this only insists the browser reads the same three numbers rather than its own, so
+    the two renderers cannot disagree about where the robber is standing."""
+    from interfaces import render
+
+    art = api.geometry()["art"]
+    assert art["scales"]["robber"] == render.ROBBER_SCALE
+    assert art["offsets"]["robber"] == render.ROBBER_OFFSET
+    assert art["aspects"]["robber"] == render.ROBBER_ASPECT
+
+
 def test_every_asset_the_client_can_ask_for_exists():
     """The client builds image URLs from the served mapping, so every combination it can
     produce has to be a real file. A missing one is an invisible piece, not an error."""
@@ -676,6 +691,9 @@ def test_every_asset_the_client_can_ask_for_exists():
     for name in art["resources"].values():
         if not (images / "tiles" / f"{name}.png").is_file():
             missing.append(f"tiles/{name}.png")
+    for name in art["cards"].values():
+        if not (images / "ressources" / f"{name}.png").is_file():
+            missing.append(f"ressources/{name}.png")
     for colour in art["colours"].values():
         for folder, pattern in (("roads", "{}_road.png"),
                                 ("settlements", "{}.png"),
@@ -684,11 +702,64 @@ def test_every_asset_the_client_can_ask_for_exists():
                 missing.append(f"{folder}/{pattern.format(colour)}")
     if not (images / "spots" / "circle.png").is_file():
         missing.append("spots/circle.png")
+    if not (images / "robber" / "robber.png").is_file():
+        missing.append("robber/robber.png")
     for number in list(range(2, 7)) + list(range(8, 13)):
         if not (images / "numbers" / f"{number}.png").is_file():
             missing.append(f"numbers/{number}.png")
 
     assert not missing, missing
+
+
+def test_a_card_is_served_for_every_resource():
+    """One per resource, and keyed the way a hand is: the panels look a card up by the same
+    name the view reports a count under, so a gap here is a resource that draws as nothing."""
+    from catan.resources import Resource
+
+    assert set(api.geometry()["art"]["cards"]) == {r.name.lower() for r in Resource}
+
+
+def test_the_card_shape_is_measured_from_the_card_art():
+    """The browser sizes a card from this one number, so it has to be the art's own shape
+    rather than a figure someone typed. All five are cropped to the same box; if a re-cut
+    set is not, one ratio can no longer describe them and the client needs telling per card.
+    """
+    from PIL import Image
+
+    images = (pathlib.Path(__file__).resolve().parents[1]
+              / "interfaces" / "static" / "images" / "ressources")
+
+    shapes = {}
+    for name in api.geometry()["art"]["cards"].values():
+        with Image.open(images / f"{name}.png") as card:
+            shapes[name] = card.size
+
+    assert len(set(shapes.values())) == 1, f"the cards are not one shape: {shapes}"
+    width, height = next(iter(shapes.values()))
+    assert api.CARD_ASPECT == pytest.approx(width / height)
+    assert api.geometry()["art"]["aspects"]["card"] == pytest.approx(width / height)
+
+
+def test_the_card_art_is_cropped_to_the_card():
+    """The set arrived as 1920x1080 renders with the card afloat in white, which is the one
+    defect this cannot see by looking at the shape: the padding was centred, so the aspect
+    ratio was of the *canvas*. The client sizes the file, so a card in a white field draws
+    smaller than asked with a margin nobody chose and no rule of the game to blame.
+
+    Any ink at all counts, since a margin from a render is flat #FFFFFF and differs by zero.
+    """
+    from PIL import Image, ImageChops
+
+    images = (pathlib.Path(__file__).resolve().parents[1]
+              / "interfaces" / "static" / "images" / "ressources")
+
+    for name in api.geometry()["art"]["cards"].values():
+        with Image.open(images / f"{name}.png") as opened:
+            card = opened.convert("RGB")
+        white = Image.new("RGB", card.size, (255, 255, 255))
+        drawn = ImageChops.difference(card, white).convert("L").getbbox()
+        assert drawn is not None, f"{name}.png is blank"
+        assert drawn == (0, 0, *card.size), f"{name}.png has white padding around it"
 
 
 APP_JS = (pathlib.Path(__file__).resolve().parents[1]
@@ -710,9 +781,19 @@ def client_code():
 def test_the_client_does_not_hard_code_the_art_mapping():
     """If the JavaScript ever writes "weat" or a colour name in *code*, the mapping has
     been duplicated and the two copies will drift."""
-    for literal in ('"weat"', "'weat'", "weat.png", "stone.png",
+    for literal in ('"weat"', "'weat'", "weat.png", "stone.png", "wheat.png", "ore.png",
                     '"red_road', '"blue_road', "settlements/red", "cities/blue"):
         assert literal not in client_code(), f"{literal} is hard-coded in app.js"
+
+
+def test_the_client_is_told_the_shape_of_a_sprite():
+    """The number the browser needs that the PNG renderer never did: it fits a sprite by
+    width and lets the file supply the rest, while an SVG <image> takes both. Written in
+    JavaScript it would be a guess at the proportions of a file the client never opens, and
+    a sprite drawn to a guessed ratio is a stretched sprite — which reads as bad art rather
+    than as a bug, so nothing fails and nobody looks."""
+    assert "art.aspects" in client_code(), "the client must be told, not guess"
+    assert "art.cards" in client_code(), "the card file names must come from the server"
 
 
 def test_the_client_has_no_stray_control_characters():
