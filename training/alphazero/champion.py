@@ -54,7 +54,21 @@ PROMOTION_GAMES = 400
 #: ``(weights, simulations)`` pair, so measuring at one number and playing at another would
 #: publish a figure for a player nobody faces. The interfaces import this rather than keeping
 #: their own copy.
-CHAMPION_SIMULATIONS = 32
+#:
+#: 64, raised from 32, because search still buys strength at this network size — measured
+#: against the fixed heuristic over 200 games apiece:
+#:
+#:      0 sims (raw policy)  64.8%      64 sims   78.9%
+#:     16 sims               73.4%     128 sims   81.9%
+#:     32 sims               74.4%
+#:
+#: Still climbing at 128, so this is a *latency* choice rather than a strength one. One
+#: decision costs 52 ms at 32, 101 ms at 64 and 207 ms at 128 on one thread, and 207 ms does
+#: not fit inside the 200 ms pace a watched game is played back at — so 64 takes most of the
+#: available gain and stays comfortably inside the budget. Raise it if you do not care about
+#: watch mode, and re-measure the record if you do: the number in `champion_az.json` belongs
+#: to the simulation count it was measured at.
+CHAMPION_SIMULATIONS = 64
 
 #: How far a candidate may fall against the fixed baseline before promotion is refused, even
 #: if it beat the champion.
