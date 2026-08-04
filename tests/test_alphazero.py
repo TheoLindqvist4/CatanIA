@@ -1137,3 +1137,58 @@ def test_dashboard_survives_a_corrupt_study(tmp_path):
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     assert "unreadable" in dashboard.build(run, bad)
+
+
+def test_a_forced_promotion_must_say_why(tmp_path, monkeypatch):
+    """Overriding the gate silently is how a gate stops meaning anything."""
+    from training.alphazero import champion as az
+
+    net = new_network()
+    candidate = tmp_path / "candidate.pt"
+    torch.save({"config": net.config(), "weights": net.state_dict()}, candidate)
+    monkeypatch.setattr(az, "MODELS", tmp_path)
+    monkeypatch.setattr(az, "CHAMPION", tmp_path / "champion_az.pt")
+    monkeypatch.setattr(az, "RECORD", tmp_path / "champion_az.json")
+    monkeypatch.setattr(az, "PPO_CHAMPION", tmp_path / "champion.pt")
+
+    promoted, why = az.promote(candidate, force=True, log=lambda *_: None)
+    assert not promoted
+    assert "say why" in why
+    assert not (tmp_path / "champion_az.pt").exists()
+
+
+def test_a_forced_promotion_records_the_reason_and_the_head_to_head(tmp_path, monkeypatch):
+    """A forced promotion must never be mistakable for one that passed the gate — and it
+    must keep the number that made it a judgement call."""
+    from training.alphazero import champion as az
+
+    net = new_network()
+    candidate = tmp_path / "candidate.pt"
+    reigning = tmp_path / "champion_az.pt"
+    torch.save({"config": net.config(), "weights": net.state_dict()}, candidate)
+    torch.save({"config": net.config(), "weights": net.state_dict()}, reigning)
+    monkeypatch.setattr(az, "MODELS", tmp_path)
+    monkeypatch.setattr(az, "CHAMPION", reigning)
+    monkeypatch.setattr(az, "RECORD", tmp_path / "champion_az.json")
+    monkeypatch.setattr(az, "PPO_CHAMPION", tmp_path / "nothing.pt")
+
+    played = []
+
+    def result(a, b, games=400, seed=0, **kwargs):
+        played.append(b["kind"])
+        return {"wins": 52, "losses": 48, "truncated": 0, "games": 100,
+                "win_rate": 0.52, "ci": (0.42, 0.62), "ci_width": 0.20}
+
+    monkeypatch.setattr("training.alphazero.arena.compete", result)
+    promoted, why = az.promote(candidate, games=100, force=True,
+                               reason="better on the fixed yardstick", log=lambda *_: None)
+
+    assert promoted and "better on the fixed yardstick" in why
+    written = json.loads((tmp_path / "champion_az.json").read_text(encoding="utf-8"))
+    assert written["forced"] is True
+    assert written["forced_reason"] == "better on the fixed yardstick"
+    assert written["beat_champion"] == 0.52, (
+        "the head-to-head is the whole context for an override; a record without it "
+        "cannot be argued with later"
+    )
+    assert "mcts" in played

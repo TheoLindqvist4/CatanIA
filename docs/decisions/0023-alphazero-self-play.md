@@ -509,9 +509,33 @@ heuristic rung alone would have thrown away the property that makes a self-play 
 anything.
 
 More games would not settle it: at 51.8%, a thousand games gives about [48.7, 54.9] and still
-includes 50%. The two models are close to equal in a direct match. **When this happens, the
-answer is more training, not a longer measurement** — or a deliberate, recorded override, which
-is what `promote --force` is for and why it writes `"forced": true` into the record.
+includes 50%. The two models are close to equal in a direct match.
+
+**And on this occasion the override was the right call.** Reading the rungs against each other
+rather than against the rule:
+
+- 80.6% vs 74.4% against the fixed heuristic is **significant** — two-proportion z = 2.10,
+  p = 0.036. Not an overlapping-interval judgement; a test.
+- 77.6% vs 76.1% against the PPO champion: better, not significantly.
+- 51.8% head to head: better, not significantly.
+
+Better on every rung, worse on none, and significantly better on the yardstick this project
+says is the comparable measure across time. The head-to-head rung is also a *weak
+discriminator here specifically*, because the candidate is the champion's direct descendant,
+warm-started from it — two closely related networks drift toward 50% against each other even
+when one is stronger against the field.
+
+So `iter_168` was promoted with `--force`, and the record says `"forced": true` with the
+numbers and the argument in `forced_reason`.
+
+**Two things were deliberately not done.** The gate's rule was *not* rewritten to make this
+candidate pass: "significantly better against the fixed yardstick, not worse head to head" may
+well be a legitimate second path to promotion, but designing it while looking at the candidate
+it would bless is how a gate stops meaning anything. That question is worth deciding on its own
+merits, separately. And `--force` now **requires** `--reason`, refuses without one, and plays
+the head-to-head rung anyway so the record keeps the number that made it a judgement call —
+the first version skipped it and wrote `beat_champion: null` onto the one promotion where that
+number mattered most.
 
 ---
 

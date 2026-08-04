@@ -173,11 +173,22 @@ def describe():
 # --------------------------------------------------------------------------- #
 
 def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
-            simulations=CHAMPION_SIMULATIONS, force=False, log=print):
+            simulations=CHAMPION_SIMULATIONS, force=False, reason=None, log=print):
     """Install ``candidate_path`` as the AlphaZero champion if it earns the place.
+
+    Args:
+        force: install without requiring the head-to-head rung. The record then carries
+            ``"forced": true`` and ``"forced_reason"``, because a promotion that did not pass
+            the gate must never be mistaken for one that did — and a year later the only
+            thing that distinguishes them is what was written down at the time.
+        reason: why the gate was overridden. **Required** when ``force`` is set. A forced
+            promotion with no stated reason is indistinguishable from a mistake.
 
     Returns ``(promoted, reason)``.
     """
+    if force and not reason:
+        return False, ("a forced promotion has to say why — pass --reason. Overriding the "
+                       "gate silently is how a gate stops meaning anything")
     from training.alphazero.arena import compete
     from training.alphazero.evaluator import better, format_result
 
@@ -212,8 +223,20 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
     }
 
     if force:
-        _install(candidate_path, {**results, "forced": True})
-        return True, "forced"
+        # The head-to-head rung is still *played*, even though it cannot refuse: the number
+        # is the whole context for the override, and a record that omits it cannot be
+        # argued with later. Skipping it was the first version, and it wrote
+        # `beat_champion: null` onto the one promotion where that number mattered most.
+        if reigning_exists:
+            log(f"{games} games against the reigning AlphaZero champion "
+                f"(recorded, but not a veto because this is forced):")
+            against_champion = compete(
+                me, {"kind": "mcts", "path": str(CHAMPION), "simulations": simulations},
+                games=games, seed=seed + 2)
+            log("  " + format_result("champion", against_champion))
+            results["beat_champion"] = against_champion["win_rate"]
+        _install(candidate_path, {**results, "forced": True, "forced_reason": reason})
+        return True, f"forced: {reason}"
 
     if not reigning_exists:
         # The hole in the older gate, closed. A first candidate is still measured; it just
@@ -310,7 +333,10 @@ def main(argv=None):
     run.add_argument("--seed", type=int, default=41_000)
     run.add_argument("--simulations", type=int, default=CHAMPION_SIMULATIONS)
     run.add_argument("--force", action="store_true",
-                     help="install without the match; for restoring a known-good model")
+                     help="install even if the head-to-head rung does not clear 50%%; "
+                          "requires --reason and is recorded as forced")
+    run.add_argument("--reason", default=None,
+                     help="why the gate is being overridden; required with --force")
     run.set_defaults(func=_promote_command)
 
     arguments = parser.parse_args(argv)
@@ -323,7 +349,7 @@ def _promote_command(arguments):
     torch.set_num_threads(4)
     promoted, reason = promote(arguments.candidate, games=arguments.games,
                                seed=arguments.seed, simulations=arguments.simulations,
-                               force=arguments.force)
+                               force=arguments.force, reason=arguments.reason)
     print(("PROMOTED — " if promoted else "kept the current champion — ") + reason)
     print(describe())
     return 0 if promoted else 1
