@@ -80,7 +80,13 @@ SETTLEMENT_SCALE = 0.40
 CITY_SCALE = 0.50
 SPOT_SCALE = 0.26
 ROAD_LENGTH_SCALE = 0.80      # of one hex edge
-ROBBER_SCALE = 0.30
+ROBBER_SCALE = 0.18           # a narrow sprite, so this is a figure 0.33 hex heights tall
+
+#: The robber sprite's proportions, width over height. This renderer never needs it — it
+#: fits a sprite by width and the file supplies the rest — but the browser sizes an SVG
+#: <image> in both dimensions, so it is served. Measured from the asset by
+#: ``tests/test_render.py::test_the_robber_sprite_is_the_shape_the_client_is_told``.
+ROBBER_ASPECT = 460 / 960
 
 #: How far below a tile's centre the number token belongs, as a fraction of one hex height.
 #:
@@ -95,6 +101,30 @@ ROBBER_SCALE = 0.30
 #: ``tests/test_render.py::test_the_number_token_is_centred_in_the_blank_panel`` re-measures
 #: them and fails if the art and this number ever disagree.
 NUMBER_OFFSET = 0.135
+
+#: How far *above* a tile's centre the robber stands, as a fraction of one hex height.
+#:
+#: This and ROBBER_SCALE are one decision, not two. A tile's centre band is spoken for: the
+#: number token's ink starts 0.003 of a hex height above the centre, and a settlement on the
+#: tile's top corner hangs down to -0.356. That leaves a clear band of 0.353 between them,
+#: and the robber is sized to sit inside it with about 0.013 to spare at each end.
+#:
+#: Both ends of that band are load-bearing. Which number is blocked is the one thing a player
+#: needs from a robbed tile — it used to be a grey ellipse centred on the tile, covering the
+#: token's top third. And all of the robber's identity is in its head: measured at 0.24/-0.25
+#: it looked better alone, but a settlement on the top corner covered the hat and the mask
+#: exactly, leaving an anonymous black blob.
+#:
+#: A *city* is the one piece bigger than the band allows — it hangs to -0.307 and takes the
+#: top 0.035 off the hat. Left as it is: what identifies the robber is the brim and the white
+#: mask, and both stay clear. Sizing for the city instead costs a fifth of the figure.
+#:
+#: Standing it higher instead does not work: a pointy-top hex narrows to a point, so past
+#: about -0.35 the hat brim is wider than the tile under it.
+#:
+#: ``tests/test_render.py`` re-measures all of this against the art rather than trusting the
+#: figures, because every one of them is a number someone may reasonably want to change.
+ROBBER_OFFSET = -0.18
 
 BACKGROUND = (36, 78, 120)     # sea
 _cache = {}
@@ -222,9 +252,13 @@ def render(state, hex_width=120, show_spots_for=None, show_labels=True):
     _draw_harbours(canvas, draw, geometry, state, show_labels)
     if show_spots_for is not None:
         _draw_available_spots(canvas, geometry, state, show_spots_for)
+    # Before the pieces, which is the order the browser draws in. It matters because the
+    # robber stands high enough on its tile to meet a city on the tile's top corner, and two
+    # renderers disagreeing about which of them is in front is exactly the drift this
+    # interface exists to remove. See ROBBER_OFFSET for why the robber is the one behind.
+    _draw_robber(canvas, geometry, state)
     _draw_roads(canvas, geometry, state)
     _draw_buildings(canvas, geometry, state)
-    _draw_robber(draw, geometry, state)
     return canvas
 
 
@@ -319,14 +353,10 @@ def _draw_buildings(canvas, geometry, state):
         _paste(canvas, sprite, geometry.vertex(vertex))
 
 
-def _draw_robber(draw, geometry, state):
+def _draw_robber(canvas, geometry, state):
+    sprite = _fitted(_load("robber", "robber.png"), geometry.hex_width * ROBBER_SCALE)
     centre = geometry.tile(state.robber_tile)
-    radius = geometry.hex_width * ROBBER_SCALE / 2
-    draw.ellipse(
-        [centre[0] - radius, centre[1] - radius * 1.35,
-         centre[0] + radius, centre[1] + radius * 1.35],
-        fill=(40, 40, 45, 230), outline=(15, 15, 18, 255), width=2,
-    )
+    _paste(canvas, sprite, (centre[0], centre[1] + geometry.hex_height * ROBBER_OFFSET))
 
 
 def save(state, path, **kwargs):

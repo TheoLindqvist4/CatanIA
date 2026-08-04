@@ -13,7 +13,14 @@ changing the engine, the observation, or the agents.
 generated from `ROW_LENGTHS`, not written down. The browser draws what the server sends and
 decides nothing. The web client is told which image file goes with which resource, because
 the art set calls wheat `weat` and ore `stone` and a second copy of that mapping in
-JavaScript would be a bug waiting to happen.
+JavaScript would be a bug waiting to happen. The resource *cards* under
+`static/images/ressources/` are a second, separate set — a tile is a forest, a card is one
+tree. They are named after the resource, so that mapping is an identity; it is served anyway,
+together with its shape in `art.aspects`, because a portrait card sized by a ratio guessed in
+JavaScript is a stretched card that reads as bad art rather than as a bug. The robber is
+served the same way, and its `scales`/`offsets`/`aspects` entries are one decision rather than
+three: together they are what keeps it standing *above* the number token instead of over it,
+which is the one thing a player needs from a blocked tile.
 
 **Hidden information is impossible, not merely absent.** `PublicView` is an allow-list — a
 new field on `GameState` is invisible to agents until someone adds it deliberately. Anything
@@ -25,8 +32,15 @@ scrambler; use it rather than writing a weaker one.
 better, and one measured as the opposite. Numbers or it did not happen.
 
 **Confidence intervals, not point estimates.** 200 games gives about ±7 points, which cannot
-tell 45% from 55%. `training/evaluate.py` has a Wilson interval; use it. Several results in
-this session flipped meaning between 200 and 800 games.
+tell 45% from 55%. `training/evaluate.py` has a Wilson interval; use it. Several results have
+flipped meaning between 200 and 800 games.
+
+⚠️ **Picking the best of N candidates on one sample and then quoting that sample is
+winner's curse, and it has bitten here twice.** A checkpoint chosen as the best of six at 200
+games measured 83.9% and then 80.1% on a fresh 400 — the entire apparent gain over the
+champion was the selection. `training/alphazero/arena.py::rank` is for *ordering* candidates;
+the number that gets written down has to come from a fresh match, which is what the promotion
+gate is. Never promote on the ranking's own figure.
 
 ---
 

@@ -56,7 +56,7 @@ catan/
 interfaces/
   render.py        # ✅ draws a GameState as a PNG, straight from the topology lattice
   cli.py           # ✅ play or watch in the terminal — the ONLY place print()/input() appear
-  static/images/   # ✅ board art, vendored from FullStackCatan
+  static/images/   # ✅ board art vendored from FullStackCatan, + the card and robber sets
   web/
     api.py         # ✅ the game as plain dicts — no HTTP, so it is testable
     server.py      # ✅ a stdlib HTTP shim over api.py
