@@ -278,15 +278,25 @@ AGENTS = {
     "random": lambda seed, colour: RandomAgent(seed),
 }
 
-# A trained policy joins the roster when one has been exported. Optional: the CLI must work
-# on a checkout with no PyTorch installed.
-# The champion joins the roster when there is one. Optional: the CLI must work on a
-# checkout with no PyTorch, and must not be disturbed by a training run in progress.
+# Each champion joins the roster when there is one. Optional: the CLI must work on a
+# checkout with no PyTorch, and must not be disturbed by a training run in progress — both
+# are read from models/, which only a promotion writes.
 try:
     from training import champion as _champion
+    from training.alphazero import champion as _az_champion
 
     if _champion.load() is not None:
         AGENTS["learned"] = lambda seed, colour: _champion.load(temperature=0.35, seed=seed)
+    elif _az_champion.load_previous_technique() is not None:
+        # Promoted at an older encoder.SIZE, so champion.load refuses it. The observation
+        # only grew, and the graft gives the new columns zero weight, so this is the same
+        # function that was measured — see interfaces/web/api.py and decision record 0023.
+        AGENTS["learned"] = lambda seed, colour: _az_champion.load_previous_technique(
+            temperature=0.35, seed=seed)
+
+    if _az_champion.load() is not None:
+        AGENTS["alphazero"] = lambda seed, colour: _az_champion.load(
+            simulations=_az_champion.CHAMPION_SIMULATIONS, temperature=0.35, seed=seed)
 except ImportError:
     pass
 
@@ -354,10 +364,15 @@ def main(argv=None):
         prog="python -m interfaces.cli",
         description="Play or watch a game of Catan.",
     )
+    # The strongest available opponent, in order of preference. AlphaZero first when it
+    # exists: its promotion gate refuses to install one that has not beaten the fixed
+    # heuristic, so its presence is itself the evidence.
+    strongest = next((name for name in ("alphazero", "learned") if name in AGENTS), "hard")
     parser.add_argument("--agents", nargs="+",
-                        default=["human", "learned" if "learned" in AGENTS else "hard"],
+                        default=["human", strongest],
                         metavar="AGENT",
-                        help=f"one per seat: {', '.join(AGENTS)} (default: human hard)")
+                        help=f"one per seat: {', '.join(AGENTS)} "
+                             f"(default: human {strongest})")
     parser.add_argument("--seed", type=int, default=None, help="reproduces a whole game")
     parser.add_argument("--games", type=int, default=1, help="play this many")
     parser.add_argument("--rules", choices=["ranked1v1", "base"], default="ranked1v1")

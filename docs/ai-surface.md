@@ -146,6 +146,13 @@ highest-priority *action type* available, with no idea *where* to build, and sti
 `play_match` **swaps seats every other game**, because Catan's first-player advantage is real
 and large; a fixed-seat result measures the seat as much as the agent.
 
+For agents that *search*, `play_match` is too slow to be useful — a game costs 5.2 seconds at
+32 simulations against the heuristic's 56 milliseconds, so a 300-game match is 26 minutes.
+`training.alphazero.arena.compete` plays the same match across processes and returns the same
+shape of result. It re-seeds each agent per game so the answer does not depend on the worker
+count; `play_match` lets agent RNG carry between games, which is why the two sample the same
+quantity by different draws.
+
 ---
 
 ## Performance
@@ -165,7 +172,7 @@ training loop shows it matters, not before.
 
 ---
 
-## ⚠️ Search needs to sample hidden state, and does not yet
+## ⚠️ Search must sample hidden state — and there are exactly two ways to do it
 
 `state.clone(rng=state.rng)` diverges for plain dice, but **three pieces of hidden state are
 copied verbatim** and therefore replay identically:
@@ -175,7 +182,23 @@ copied verbatim** and therefore replay identically:
 - opponents' `dev_cards`
 
 That is *correct*: these are hidden, not random. But it means a rollout from a cloned state is
-not a sample of the future — it is the same future. **Before building MCTS, reshuffle the unseen
-parts**, which is belief-sampling and depends on the algorithm, so it is deliberately left out.
-`test_with_balanced_dice_a_clone_replays_the_same_rolls_even_sharing_the_rng` pins the
+not a sample of the future — it is *the* future, and searching it is reading the opponent's
+cards. `test_with_balanced_dice_a_clone_replays_the_same_rolls_even_sharing_the_rng` pins the
 behaviour so it is not discovered by surprise.
+
+**Anything that searches must go through one of two doors.**
+
+`training.agent.DETERMINISTIC_TYPES`
+    Search only the actions whose outcome is fully determined by public information — build,
+    trade, discard, Year of Plenty, Road Building. Simple, and it caps the agent at one ply
+    forever, because a second ply needs the opponent's reply.
+
+`training.alphazero.determinize.determinize`
+    Resample everything hidden from what is public — resources from the bank complement, dev
+    cards from the unplayed pool, the dice deck by length — and then search the resulting
+    world as deeply as you like. This is belief sampling, and it is what MCTS is built on.
+
+The second is held to the same standard as the observation: scrambling the hidden state at
+constant public counts must leave the resampled world *identical*, asserted with
+`tests/helpers.py::scramble_hidden_state` in
+`tests/test_alphazero.py::test_determinize_ignores_hidden_state`.

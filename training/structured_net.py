@@ -154,12 +154,23 @@ class StructuredPolicyValueNet(nn.Module):
         rounds: rounds of *non-linear* message passing between embeddings, after the
             shared encoders. Measured, expensive, and off by default.
         trunk: width of the pooled head producing the value and the 49 non-positional logits.
+        value_activation: ``"linear"`` (the default, and what every PPO checkpoint was
+            trained with) or ``"tanh"``. AlphaZero's value target is exactly +-1 and its
+            loss is a mean square error, so an unbounded head spends its first epochs
+            learning the range instead of the position; ``tanh`` puts the output in
+            ``[-1, 1]`` by construction. Kept as an option rather than a second class so
+            there is one network, and defaulted to ``"linear"`` so a checkpoint written
+            before this field existed rebuilds byte-identically.
     """
 
     def __init__(self, obs_size=encoder.SIZE, num_actions=action_space.NUM_ACTIONS,
                  width=64, road_width=32, context=128, hops=1, depth=2, rounds=0,
-                 trunk=256):
+                 trunk=256, value_activation="linear"):
         super().__init__()
+        if value_activation not in ("linear", "tanh"):
+            raise ValueError(f"value_activation must be 'linear' or 'tanh', "
+                             f"got {value_activation!r}")
+        self.value_activation = value_activation
         if obs_size != encoder.SIZE:
             raise ValueError(f"this network is tied to the encoder layout: expected "
                              f"{encoder.SIZE} floats, got {obs_size}")
@@ -312,7 +323,10 @@ class StructuredPolicyValueNet(nn.Module):
             self.robber_logit(t).reshape(batch, -1),           # MOVE_ROBBER       x 95
             other[:, 21:],                                     # DISCARD..MONOPOLY x 28
         ], dim=-1)
-        return logits, self.value_head(hidden).squeeze(-1)
+        value = self.value_head(hidden).squeeze(-1)
+        if self.value_activation == "tanh":
+            value = torch.tanh(value)
+        return logits, value
 
     # ------------------------------------------------------------------ #
     # The masking contract, identical to PolicyValueNet's.               #
@@ -356,6 +370,7 @@ class StructuredPolicyValueNet(nn.Module):
             "depth": self.depth,
             "rounds": self.rounds,
             "trunk": self.trunk_width,
+            "value_activation": self.value_activation,
         }
 
     @classmethod
@@ -366,8 +381,9 @@ class StructuredPolicyValueNet(nn.Module):
         return sum(p.numel() for p in self.parameters())
 
     def __repr__(self):
+        tail = "" if self.value_activation == "linear" else f", value={self.value_activation}"
         return (f"StructuredPolicyValueNet(width={self.width}/{self.road_width}, "
-                f"hops={self.hops}, depth={self.depth}, rounds={self.rounds}, "
+                f"hops={self.hops}, depth={self.depth}, rounds={self.rounds}{tail}, "
                 f"{self.num_parameters():,} params)")
 
 

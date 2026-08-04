@@ -23,7 +23,9 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **4** | Interfaces (renderer, CLI) | ✅ **done** |
 | **5** | Engine support for an interface: events, click targets | ✅ **done** |
 | **6** | The web game — play against it in a browser | ✅ **done** |
-| **7** | A better opponent: the heuristic agent | ⬜ **next** |
+| **7** | A better opponent: the heuristic agent | ✅ **done** |
+| **8** | PPO self-play, the champion and its gate | ✅ **done** |
+| **9** | AlphaZero: determinized search, self-play, a second champion | ✅ **done** — 74.7% vs the heuristic |
 
 598 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
 
@@ -530,20 +532,61 @@ than by what was expected:
 
 ### Still open
 
-- [ ] **Belief sampling.** Every remaining idea that involves search needs it: a rollout past
-      one ply requires the opponent's reply, which requires their hand. `clone()` replays the
-      same hidden future rather than sampling one, which is correct and is exactly the
-      obstacle.
+- [x] **Belief sampling.** Built in Phase 9 as `training/alphazero/determinize.py`. It was
+      the prerequisite for every search idea, and it is what makes the AlphaZero tree legal.
 - [ ] **A stronger critic.** The structured network's value head is worse than the flat one's
       (MAE 0.210 against 0.074) — the one place the old architecture still wins, and the
-      likely reason lookahead buys nothing.
+      likely reason PPO's one-ply lookahead bought nothing. AlphaZero trains the value head
+      on game outcomes directly, which is a different and probably better shot at it.
+
+---
+
+## Phase 9 — AlphaZero ✅
+
+`docs/catan_alphazero_implementation_guide.md` asked for a self-play pipeline with search.
+The full reasoning, and every place this departs from the guide, is
+[decision 0023](docs/decisions/0023-alphazero-self-play.md). The short version:
+
+**The result.** `models/champion_az.pt`, promoted 2026-08-04 at 32 simulations a move:
+
+| | | |
+|---|---:|---|
+| against the fixed heuristic | **74.7%** | 293-99, [70.2, 78.8], 400 games |
+| against the PPO champion | **76.5%** | 306-94, [72.1, 80.4], 400 games |
+
+Three stages, ~2h40m of training on 20 CPU cores, 615,307 positions in the final stage alone.
+Training is **pure self-play** — one network plays both seats, there is no opponent pool, and
+the heuristic never generates a training position. It appears only as a yardstick.
+
+**What was built.** `training/alphazero/` — determinized PUCT search with the dice as chance
+nodes, many games in flight per worker feeding one batched evaluator, a ring buffer sampled in
+equal parts by age, the continuous generate/learn/measure loop, parallel head-to-head matches,
+and a second champion under its own name with its own gate. Plus `benchmark/` and
+`configs/train.yaml`, which the guide asks for and the repository did not have.
+
+**The part that mattered.** Search over hidden information needed `determinize.py`, which was
+the item sitting open under Phase 8. It resamples every hidden quantity from public facts
+only, so scrambling the hidden state at constant public counts leaves the searched world
+identical — asserted with the same scrambler the encoder and the heuristic are held to.
+
+**What was found on the way.** `models/champion.pt` had not loaded since the affordability
+block changed `encoder.SIZE` from 1868 to 1884, so both interfaces had silently been offering
+the heuristic. One tensor was the wrong shape; `network.graft` widens it with zero columns,
+which reproduces the original function exactly, and the interfaces offer it again.
+
+**Where the speed went.** The guide makes simulation throughput priority one.
+`python -m benchmark.benchmark` is now the number to optimise against. Four measured fixes
+(the leaf deriving legality twice, `np.errstate` inside the selection rule, a Python loop
+gathering priors, and `np.asarray` over lists of lists) were worth 13% together; switching the
+pool from a sample-count share to a wall-clock slice was worth considerably more, because
+samples bank in cohorts and `pool.map` waits for the slowest worker.
 
 ## What this deliberately does not include
 
-- **A trained agent.** The interface talks to the same `(observation, info) -> index` callable that
-  `RandomAgent` and `GreedyAgent` implement, so a learned policy drops in later without the
-  interface changing — it is one entry in `api.OPPONENTS`. That work — belief sampling, self-play,
-  a network — stays where it is described under Phase 3.
+- **Multi-machine training.** The guide's stage 3 — workers on several machines feeding a
+  central replay buffer. `ParallelSelfPlay` is a process pool on one box, and the interface it
+  presents (`generate(seconds=...)` returning arrays) is the right seam to replace, but nothing
+  distributed is built.
 - **Multiplayer over a network.** One human against the AI, locally. Accounts, lobbies and
   matchmaking are a different project.
 - **A FullStackCatan adapter**, per the note above: the two projects stay independent.

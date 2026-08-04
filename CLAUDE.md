@@ -113,7 +113,25 @@ variable after the id it holds.
 **Applying an action to a `clone()` can reveal hidden information.** The dev deck, dice deck
 and opponents' hands are copied verbatim, so a lookahead over `BUY_DEV_CARD`, `MOVE_ROBBER`,
 `PLAY_KNIGHT`, `END_TURN` or `PLAY_MONOPOLY` sees the *real* outcome.
-`training.agent.DETERMINISTIC_TYPES` is a correctness boundary, not an optimisation.
+`training.agent.DETERMINISTIC_TYPES` is a correctness boundary, not an optimisation. The
+AlphaZero package answers the same problem the other way — `training/alphazero/determinize.py`
+resamples everything hidden from what is public, so its search may go as deep as it likes.
+**Anything that searches must go through one of those two doors.**
+
+**`models/champion.pt` has not loaded since the affordability block landed.** It was promoted
+at `encoder.SIZE == 1868`; the encoder is now 1884, so `training.champion.load()` returns
+`None` and both interfaces silently fell back to the heuristic for a while. Nothing raised.
+`training.alphazero.network.graft` reconciles it — the only wrong-shaped tensor is
+`context_mlp.0.weight`, and inserting the 16 new columns as **zeros** reproduces the original
+function exactly — and the interfaces now offer the grafted model. Check `champion.load()` is
+not `None` after any observation change.
+
+⚠️ **`models/champion.json` says 71.6% against the heuristic; it measures 49.3% today**
+(150 games, [41.4, 57.3]). Not a broken graft — that was checked three ways. Commit `e4b0441`
+restricted pre-roll development-card plays to the Knight *after* the champion was promoted, so
+the recorded number belongs to a slightly different game. This is the rule below about the
+fixed yardstick, biting for real: **a `beat_heuristic` figure is only comparable within one
+version of the rules.** Re-measure before trusting any number in a champion record.
 
 **Benchmark persistent collectors with warm-up calls.** Transitions bank in bursts when games
 finish, so a short measurement measures luck. An early benchmark reported 4 workers as faster
@@ -129,7 +147,20 @@ resulting pattern matches nothing while reading as though it works. There is a t
 control characters in `app.js`.
 
 **`python -m` with a heredoc and a pipe buffers output.** Use `python -u`, and read
-`checkpoints/metrics.jsonl` for training progress rather than the piped stdout.
+`checkpoints/metrics.jsonl` for training progress rather than the piped stdout. `| tail` is
+worse than buffering — it prints *nothing* until the process exits, so a three-hour run looks
+hung. Redirect to a file and read the file.
+
+**Self-play samples bank in cohorts, not continuously.** A worker's `envs_per_worker` games
+advance in lockstep — one simulation each per round — so they also *finish* together. Nothing
+comes back for the first ~30 s of worker time and then several thousand positions arrive at
+once. Two consequences, both measured:
+
+* a `generate(positions=N)` call takes a wildly variable time (5 s for one worker, 46 s for
+  another on the same request), and `pool.map` waits for the slowest, so most of the pool
+  idles. **Time-box the slice instead** — `generate(seconds=...)`. Count-based sharing measured
+  172 positions/sec across 14 workers where the clock-based one gives ~400.
+* `envs_per_worker` is a latency knob as much as a batch-size knob.
 
 ---
 
@@ -153,6 +184,48 @@ replaces it.
 27.8 → 21.9 → 31.6 → 31.1 before climbing to 77.6%. Another started *below* its predecessor
 and overtook at iteration 79. Judged at iteration 59 both would have been abandoned. Check
 whether the intervals overlap before concluding anything.
+
+**Two lineages, two champions.** `models/champion.pt` is PPO; `models/champion_az.pt` is
+AlphaZero. They are separate files on purpose and the interfaces offer both. Do not train one
+into the other's file.
+
+**The AlphaZero package is where search lives, and its shape follows from the game.** Dice are
+chance nodes keyed by roll *total*, resampled per visit. Values propagate in seat 1's frame
+rather than flipping by depth, because the game is not alternating — during a discard the mover
+may be either player. `Search` refuses `num_players != 2` for that reason. Forced moves
+(≈30% of decisions) are collapsed during descent and never recorded: a one-hot policy target
+teaches nothing and costs a network evaluation.
+
+**The AlphaZero run is warm-started, and that is a choice, not a default.** At the simulation
+counts a CPU affords, MCTS is a modest improvement over its prior, so starting from a policy
+that already plays is what makes a few hours worth anything. `--cold` does it the guide's way.
+Say which one produced a number.
+
+⚠️ **The AlphaZero loop's win-rate column measures the raw policy, and the champion plays with
+search. They move in opposite directions.** On identical games, between two checkpoints of one
+run: raw policy 47.4% → 43.8%, the same weights *with 32 simulations* 57.1% → **60.8%**. The
+value head is what search leans on hardest and it was still improving while the policy's
+argmax drifted. So `checkpoints/alphazero/best.pt` is best-*policy*, not best-*player* —
+re-measure candidates with `training/alphazero/arena.py` before promoting, and never read the
+in-loop curve as the run's progress.
+
+⚠️ **When the policy will not learn, measure the labels — not the loss curve.** A run at 48
+simulations with AlphaZero's noise of 0.25 sat flat for 60 iterations. Everything looked
+plausible and everything *was* correct. The answer came from asking how often the recorded
+target picks the same move as a clean 400-simulation search:
+
+```
+ 48 sims, noise 0.25   62%      <- what it was training on
+ 48 sims, noise 0.10   68%
+ 96 sims, noise 0.10   78%      <- now the default
+160 sims, noise 0.10   80%
+raw policy argmax      58%      <- what it already knew
+```
+
+Four points of signal. Root noise alone flipped 24% of the top moves — 0.25 is calibrated for
+800 simulations, where it barely perturbs the visit counts, and is destructive at 48. Loss
+curves and win rates cannot tell "learning slowly" from "learning from nothing"; this
+measurement takes three minutes and does.
 
 **The champion is not the newest model.** `models/champion.pt` changes only through
 `training.champion promote`, which requires the Wilson lower bound over 400 games to clear
@@ -189,10 +262,13 @@ Recorded so it is not re-attempted.
 
 | | |
 |---|---|
-| Why something is the way it is | `docs/decisions/` — 22 records |
+| Why something is the way it is | `docs/decisions/` — 23 records |
 | What is done and what is next | `ROADMAP.md` |
 | Whether a change helped | `training/evaluate.py`, and use enough games |
+| How fast anything is | `python -m benchmark.benchmark`, and warm up first |
+| How a training run went | `python -m training.alphazero.report` |
+| Where the time goes | `python -m benchmark.profiler selfplay` |
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
 
-Run the full suite before committing: `python -m pytest tests -q` (~90 s). Two tests are
+Run the full suite before committing: `python -m pytest tests -q` (~2 min). Two tests are
 timing-based and flake under load — re-run them alone before believing a failure.

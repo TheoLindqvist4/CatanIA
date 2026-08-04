@@ -1,0 +1,14 @@
+{
+  "promoted_at": "2026-08-04 15:11",
+  "lineage": "alphazero",
+  "source": "checkpoints/az_snapshots/stage3_iter_118.pt",
+  "observation": 1884,
+  "actions": 325,
+  "beat_heuristic": 0.7474489795918368,
+  "beat_ppo_champion": 0.765,
+  "beat_champion": null,
+  "games": 400,
+  "simulations": 32,
+  "first_of_lineage": true,
+  "history": []
+}

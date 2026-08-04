@@ -22,9 +22,10 @@ python -m interfaces.web        # then open http://127.0.0.1:8000
 | **A complete Catan implementation** | Ranked 1v1 rules by default: 15 points, hand limit 9, Friendly Robber, Balanced Dice |
 | **A playable web interface** | Click the board to build. Painted artwork, resources as cards, full game log |
 | **A hand-written opponent** | Positional judgement from marginal value — beats a naive greedy agent 96.7% |
-| **A trained opponent** | PPO self-play, warm-started by cloning the heuristic |
-| **The machinery to improve it** | 1,884-float observation, 325 discrete actions, parallel rollouts, a promotion gate |
-| **753 tests** | Including leak detectors that prove no agent can see hidden information |
+| **Two trained opponents** | PPO self-play, and AlphaZero self-play with search — the latter wins **74.7%** against the heuristic and **76.5%** against the former |
+| **Search that cannot cheat** | MCTS over a resampled information set — hidden cards are redrawn from public facts before the tree is built |
+| **The machinery to improve it** | 1,884-float observation, 325 discrete actions, parallel self-play, a promotion gate per lineage |
+| **833 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
 
 ## Quick start
 
@@ -91,7 +92,8 @@ reasoning survives — including the things that did not work.
 | `hard` / `medium` / `easy` | The heuristic, with noise added to its evaluations. Difficulty is *misjudgement*, not amputated rules |
 | `greedy` | Sensible build order, random placement |
 | `random` | Uniform over legal moves |
-| `learned` | The trained champion, when one is installed |
+| `learned` | The PPO champion, when one is installed |
+| `alphazero` | The AlphaZero champion — the same network, plus 32 simulations of search per move. 74.7% against `hard` |
 
 The heuristic's central idea is **marginal value**: a settlement is worth what its tiles add
 to what you already produce, not the sum of its pips. A third wheat is worth far less than a
@@ -113,40 +115,72 @@ With no player-to-player trading, a resource you do not produce costs 4:1 at the
 
 ## Training
 
+Two lineages, trained differently, kept separately, and played against each other to find out
+which is better.
+
+### PPO
+
 ```sh
 python -m training.clone --games 300 --net structured     # imitate the heuristic, ~4 min
 python -m training.train --resume checkpoints/cloned.pt --workers 12 --lr 3e-5
 python -m training.champion promote checkpoints/best.pt   # only if measurably better
 ```
 
-**PPO, not AlphaZero.** Search needs a state you can roll forward, and `clone()` copies the
-development deck, the dice deck and opponents' hands verbatim — so a rollout replays the same
-future instead of sampling one. Belief sampling is the prerequisite, and it is not built.
-
 **Cloning first.** Self-play from random spends millions of steps rediscovering things
 `catan/heuristics.py` states outright. Cloning reaches useful play in four minutes.
+
+### AlphaZero
+
+```sh
+python -m benchmark.benchmark                             # measure before optimising
+python -u -m training.alphazero.train --hours 3           # self-play, search, learn
+python -m training.alphazero.champion promote checkpoints/alphazero/best.pt
+```
+
+Search over a game with hidden information needs a state you can roll forward *without
+reading what the opponent holds*, and `clone()` copies the development deck, the dice deck and
+opponents' hands verbatim. `training/alphazero/determinize.py` is that missing piece: it
+resamples every hidden quantity from what is public — resources from the bank complement, dev
+cards from the unplayed pool, the dice deck by length — so the tree is built on a world the
+searching player could actually be in.
+
+That it works is not an argument, it is a test. Scrambling the hidden state at constant public
+counts must leave the determinized world *identical*, and
+`tests/test_alphazero.py::test_determinize_ignores_hidden_state` asserts it with the same
+scrambler the encoder and the heuristic are held to.
+
+The rest is AlphaZero as written, with the dice as explicit chance nodes: sample a roll, key
+the child by the total, revisit and resample. Values propagate in a fixed frame rather than
+flipping by depth, because Catan is not alternating — during a discard the decision belongs to
+whoever is over the hand limit.
 
 **The network knows the board has a shape.** `training/structured_net.py` shares weights
 across all 54 vertices, 72 roads and 19 tiles, and produces per-position logits from each
 position's own embedding. Against a flat MLP on the same data: held-out agreement 69.6% →
 **80.3%**, overfitting gap 13.9 → **2.2 points**, with 7.3x fewer parameters.
 
-### The champion, and why training cannot break your game
+### The champions, and why training cannot break your game
 
 ```
-checkpoints/   scratch. A run owns it and rewrites it. Not in git.
-models/        the champion. Changes only by promotion. In git.
+checkpoints/            scratch. A run owns it and rewrites it. Not in git.
+models/champion.pt      the PPO champion.        Changes only by promotion. In git.
+models/champion_az.pt   the AlphaZero champion.  Changes only by promotion. In git.
 ```
 
-The interfaces read `models/champion.pt` and nothing else, so a fine-tune in progress cannot
-disturb a game in progress. Promotion is earned: a candidate plays 400 games against the
-reigning champion and is refused unless the Wilson lower bound clears 50%. It is also checked
-against the fixed heuristic, so a policy that beat the champion by learning its habits while
-getting worse at the game is rejected — self-play is non-transitive and that is where it
-shows.
+The interfaces read `models/` and never `checkpoints/`, so a run in progress cannot disturb a
+game in progress — which is the point: you can train in one window and play in another.
+Promotion is earned: a candidate plays 400 games against the reigning champion and is refused
+unless the Wilson lower bound clears 50%. It is also checked against the fixed heuristic, so a
+policy that beat the champion by learning its habits while getting worse at the game is
+rejected — self-play is non-transitive and that is where it shows.
 
 This is not theoretical. The gate has already refused a finished training run that scored
 48.2% against the champion.
+
+The AlphaZero gate adds two things. Its ladder includes the *PPO champion*, so the two
+lineages actually meet and "which should the interface offer" has an answer. And its **first**
+promotion is gated too: the older gate installs without a match when no champion loads, which
+fires exactly when the encoder has changed and nobody is watching.
 
 ### Recorded games
 
@@ -187,11 +221,22 @@ interfaces/            the only parts that display anything
 
 training/              the only package that imports PyTorch
   net.py structured_net.py    the policy/value networks
-  rollout.py ppo.py pool.py   self-play, the update, the opponent pool
+  rollout.py ppo.py pool.py   PPO self-play, the update, the opponent pool
   clone.py                    warm start by imitating the heuristic
-  champion.py                 the model the game plays, and the promotion gate
+  champion.py                 the PPO champion, and its promotion gate
+  alphazero/                  the AlphaZero lineage
+    determinize.py              resample what the searcher may not see — the leak boundary
+    mcts.py                     PUCT, with the dice as chance nodes
+    self_play.py workers.py     many games in flight, one batched evaluator, many processes
+    replay_buffer.py            a ring, sampled in equal parts by age
+    trainer.py train.py         the continuous loop
+    report.py                   what a run did, read back from metrics.jsonl
+    agent.py champion.py        what you play against, and its gate
 
-docs/decisions/        22 records of why things are the way they are
+benchmark/             games/sec, ms/game, and where the time goes
+configs/train.yaml     the run's settings
+
+docs/decisions/        23 records of why things are the way they are
 ```
 
 ---

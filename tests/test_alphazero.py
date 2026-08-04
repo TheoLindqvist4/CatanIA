@@ -1,0 +1,908 @@
+"""The AlphaZero pipeline: the leak boundary, the search, the buffer, and the checklist.
+
+Section 21 of the design guide is a list of ten things to establish before a long run, and
+most of this file is those ten written as assertions. They are cheap and they are the
+difference between a run that failed and a run that was never going to work:
+
+* deterministic with a fixed seed          :func:`test_generation_is_deterministic`
+* legal action mask correct                :func:`test_search_never_returns_an_illegal_move`
+* state tensor fixed shape                 :func:`test_replay_round_trips_a_real_observation`
+* action ids stable                        ``tests/test_action_space.py`` already
+* checkpoint save/load works               :func:`test_checkpoint_round_trips`
+* self-play parallelism stable             :func:`test_parallel_pool_generates`
+* no rendering or logging during training  :func:`test_generation_is_silent`
+
+The first section is the one that matters most, and it is not on the guide's list because the
+guide assumes perfect information. **Search must not see what the player may not see.**
+:func:`test_determinize_ignores_hidden_state` holds this package to the same standard the
+encoder and the heuristic are held to, using the same scrambler.
+"""
+
+import io
+import json
+import random
+from contextlib import redirect_stdout
+
+import numpy as np
+import pytest
+
+torch = pytest.importorskip("torch")
+
+from catan import action_space, encoder, rules
+from catan.agents import HeuristicAgent
+from catan.dev_cards import DevCard
+from catan.env import CatanEnv
+from catan.resources import BANK_PER_RESOURCE, NUM_RESOURCES, Resource, total
+from catan.rulesets import RANKED_1V1
+from catan.state import GameState, Phase
+from tests.helpers import complete_setup, scramble_hidden_state
+from training.alphazero import replay_buffer
+from training.alphazero.config import Config, parse
+from training.alphazero.determinize import determinize, unseen_dev_cards, unseen_resources
+from training.alphazero.mcts import CHANCE, DECISION, TERMINAL, Search
+from training.alphazero.network import graft, insertion_point, new_network
+from training.alphazero.replay_buffer import ReplayBuffer, pack_mask, sparse_policy
+from training.alphazero.self_play import Generator, to_arrays
+
+
+# --------------------------------------------------------------------------- #
+# A position part-way through a real game, for everything below to work on.   #
+# --------------------------------------------------------------------------- #
+
+def played(seed=7, moves=120, ruleset=RANKED_1V1):
+    """A state some way into a game, reached by legal play."""
+    state = GameState(num_players=2, seed=seed, ruleset=ruleset)
+    rng = random.Random(seed)
+    complete_setup(state, rng)
+    for _ in range(moves):
+        if state.phase is Phase.GAME_OVER:
+            break
+        if state.phase is Phase.ROLL:
+            legal = rules.legal_actions(state)
+            if legal and rng.random() < 0.3:
+                rules.apply(state, rng.choice(legal))
+            else:
+                rules.roll_dice(state)
+            continue
+        legal = rules.legal_actions(state)
+        if not legal:
+            break
+        rules.apply(state, rng.choice(legal))
+    return state
+
+
+def stub_evaluator(seed=0):
+    """A network-shaped function that needs no network. Deterministic given the mask."""
+    rng = np.random.default_rng(seed)
+
+    def evaluate(obs, masks):
+        scores = rng.random(masks.shape) * masks
+        totals = scores.sum(axis=1, keepdims=True)
+        probabilities = np.divide(scores, np.where(totals > 0, totals, 1.0))
+        return probabilities, np.zeros(len(obs), dtype=np.float32)
+
+    return evaluate
+
+
+# =========================================================================== #
+# The leak boundary                                                          #
+# =========================================================================== #
+
+def test_determinize_ignores_hidden_state():
+    """Scrambling what the observer may not see must not change the world search gets.
+
+    The same standard, and the same scrambler, that ``tests/test_encoder.py`` holds the
+    observation to and ``tests/test_agents.py`` holds the heuristic to. If this fails, the
+    search is reading the opponent's hand or the top of the deck — which would not crash,
+    would measure as a *stronger* agent, and would produce policy targets the network has no
+    way to reproduce from the observation it is given.
+    """
+    state = played()
+    other = state.clone(rng=random.Random(0))
+    scramble_hidden_state(other, me=1)
+
+    first = determinize(state, 1, rng=random.Random(99))
+    second = determinize(other, 1, rng=random.Random(99))
+
+    assert first.hands == second.hands
+    assert first.dev_cards == second.dev_cards
+    assert first.dev_cards_new == second.dev_cards_new
+    assert first.dev_deck == second.dev_deck
+    assert first.dice_deck == second.dice_deck
+
+
+def test_determinize_keeps_every_public_count():
+    state = played()
+    world = determinize(state, 1, rng=random.Random(3))
+
+    assert world.hands[1] == state.hands[1], "the observer's own hand must survive"
+    assert world.dev_cards[1] == state.dev_cards[1]
+    assert world.bank == state.bank
+    for player in state.players:
+        assert total(world.hands[player]) == total(state.hands[player])
+        assert sum(world.dev_cards[player]) == sum(state.dev_cards[player])
+        assert sum(world.dev_cards_new[player]) == sum(state.dev_cards_new[player])
+    assert len(world.dev_deck) == len(state.dev_deck)
+    assert len(world.dice_deck) == len(state.dice_deck)
+    assert world.vertex_owner == state.vertex_owner
+    assert world.edge_owner == state.edge_owner
+    assert world.robber_tile == state.robber_tile
+    assert world.turn_number == state.turn_number
+    assert world.phase is state.phase
+
+
+def test_determinize_does_not_touch_the_original():
+    state = played()
+    before = state.clone(rng=random.Random(0))
+    determinize(state, 1, rng=random.Random(5))
+    assert state == before
+
+
+def test_unseen_resources_reads_only_public_counts():
+    state = played()
+    expected = [BANK_PER_RESOURCE - state.bank[r] - state.hands[1][r]
+                for r in range(NUM_RESOURCES)]
+    assert unseen_resources(state, 1) == [max(0, e) for e in expected]
+
+    # The opponent's own hand must not appear in the answer.
+    state.hands[2] = [0] * NUM_RESOURCES
+    state.hands[2][Resource.ORE] = 4
+    assert unseen_resources(state, 1) == [max(0, e) for e in expected]
+
+
+def test_unseen_dev_cards_excludes_my_own_and_played_knights():
+    state = played()
+    pool = unseen_dev_cards(state, 1)
+    assert all(count >= 0 for count in pool)
+    assert sum(pool) <= 25
+    # A knight I hold is not unseen to me.
+    state.dev_cards[1][DevCard.KNIGHT] += 1
+    assert unseen_dev_cards(state, 1)[DevCard.KNIGHT] == pool[DevCard.KNIGHT] - 1
+
+
+def test_determinized_world_is_playable():
+    """A resampled world must still be a legal game the engine can be driven through."""
+    state = played()
+    world = determinize(state, 1, rng=random.Random(11))
+    assert action_space.legal_indices(world) == action_space.legal_indices(state), (
+        "legality at the root depends only on public facts and the observer's own hand, so "
+        "determinization must not change it"
+    )
+    for _ in range(40):
+        if world.phase is Phase.GAME_OVER:
+            break
+        if world.phase is Phase.ROLL and not rules.legal_actions(world):
+            rules.roll_dice(world)
+            continue
+        legal = rules.legal_actions(world)
+        if not legal:
+            break
+        rules.apply(world, legal[0])
+
+
+def test_agent_decision_is_unchanged_by_hidden_state():
+    """The whole agent, not just the determinizer, must be blind to the hidden state."""
+    from training.alphazero.agent import MCTSAgent
+
+    env = CatanEnv(num_players=2, ruleset=RANKED_1V1)
+    observation, info = env.reset(seed=4)
+    for _ in range(60):
+        if info["done"] or len(info["legal"]) > 3:
+            break
+        observation, _, _, _, info = env.step(info["legal"][0])
+
+    net = new_network()
+    torch.manual_seed(0)
+
+    honest = MCTSAgent(net, simulations=12, temperature=0.0, seed=1)
+    first = honest(observation, info)
+
+    scramble_hidden_state(env.state, me=info["player"])
+    cheat = MCTSAgent(net, simulations=12, temperature=0.0, seed=1)
+    second = cheat(observation, info)
+
+    assert first == second
+
+
+# =========================================================================== #
+# The search                                                                 #
+# =========================================================================== #
+
+def test_search_classifies_a_roll_as_a_chance_node():
+    state = played(moves=30)
+    while state.phase is not Phase.ROLL or rules.legal_actions(state):
+        if state.phase is Phase.GAME_OVER:
+            pytest.skip("game ended before a plain roll")
+        legal = rules.legal_actions(state)
+        if not legal:
+            rules.roll_dice(state)
+            continue
+        rules.apply(state, legal[0])
+    search = Search(state, budget=4, rng=np.random.default_rng(0))
+    assert search.root.kind is CHANCE
+    assert not search.searchable
+    assert search.forced is None
+
+
+def test_search_produces_visits_over_legal_actions_only():
+    state = played()
+    if not action_space.legal_indices(state):
+        pytest.skip("no decision at this position")
+    search = Search(state, budget=32, rng=np.random.default_rng(0), noise=0.0)
+    if not search.searchable:
+        pytest.skip("forced move")
+
+    evaluate = stub_evaluator()
+    while (pending := search.request()) is not None:
+        obs, mask = pending
+        probabilities, values = evaluate(obs[None, :], mask[None, :])
+        search.deliver(probabilities[0], float(values[0]))
+
+    actions, counts = search.visit_counts()
+    legal = set(action_space.legal_indices(state))
+    assert set(actions.tolist()) <= legal
+    assert counts.sum() > 0
+    assert search.best_action(0.0) in legal
+
+
+def test_search_never_returns_an_illegal_move():
+    """Over a whole game, every move the search picks must pass the engine's own mask."""
+    env = CatanEnv(num_players=2, ruleset=RANKED_1V1, max_turns=60)
+    _, info = env.reset(seed=12)
+    evaluate = stub_evaluator(1)
+    steps = 0
+
+    while not info["done"] and steps < 200:
+        state = env.state
+        search = Search(determinize(state, info["player"], rng=random.Random(steps)),
+                        budget=8, rng=np.random.default_rng(steps), noise=0.0,
+                        max_turns=env.max_turns)
+        if search.searchable:
+            while (pending := search.request()) is not None:
+                obs, mask = pending
+                probabilities, values = evaluate(obs[None, :], mask[None, :])
+                search.deliver(probabilities[0], float(values[0]))
+            action = search.best_action(0.0)
+        else:
+            action = search.forced
+        assert info["mask"][action], f"{action_space.describe(action)} is not legal"
+        _, _, _, _, info = env.step(action)
+        steps += 1
+
+
+def test_terminal_value_is_zero_sum_and_signed_by_seat():
+    """A won position must be +1 for the winner and -1 for the loser, whoever moved last."""
+    state = played()
+    state.phase = Phase.GAME_OVER
+    state.winner = 2
+    search = Search(state, budget=1, rng=np.random.default_rng(0))
+    assert search.root.kind is TERMINAL
+    assert search._terminal_value(search.root) == -1.0        # seat 1's frame
+
+    state.winner = 1
+    other = Search(state, budget=1, rng=np.random.default_rng(0))
+    assert other._terminal_value(other.root) == 1.0
+
+    state.winner = None
+    state.phase = Phase.BUILD
+    state.turn_number = 10_000
+    draw = Search(state, budget=1, rng=np.random.default_rng(0), max_turns=10)
+    assert draw.root.kind is TERMINAL
+    assert draw._terminal_value(draw.root) == 0.0
+
+
+def test_orient_is_its_own_inverse():
+    for value in (-1.0, -0.3, 0.0, 0.7, 1.0):
+        for player in (1, 2):
+            there = Search._orient(value, player)
+            assert Search._orient(there, player) == pytest.approx(value)
+
+
+def test_search_refuses_more_than_two_players():
+    state = GameState(num_players=3, seed=0)
+    with pytest.raises(ValueError, match="two players"):
+        Search(state, budget=4)
+
+
+def test_search_stays_within_its_budget():
+    state = played()
+    if not action_space.legal_indices(state):
+        pytest.skip("no decision")
+    search = Search(state, budget=17, rng=np.random.default_rng(0), noise=0.0)
+    if not search.searchable:
+        pytest.skip("forced move")
+    evaluate = stub_evaluator()
+    calls = 0
+    while (pending := search.request()) is not None:
+        obs, mask = pending
+        probabilities, values = evaluate(obs[None, :], mask[None, :])
+        search.deliver(probabilities[0], float(values[0]))
+        calls += 1
+    assert search.simulations == 17
+    assert calls <= 17
+
+
+# =========================================================================== #
+# Generation                                                                 #
+# =========================================================================== #
+
+def test_generation_is_deterministic():
+    """The guide's first checklist item. Same seed, same samples."""
+    def once():
+        generator = Generator(stub_evaluator(0), {"simulations": 8, "max_turns": 80},
+                              seed=3, width=3)
+        samples, results = generator.run(positions=40)
+        return ([(s.index.tolist(), s.probability.tolist(), s.player, outcome)
+                 for s, outcome in samples],
+                [r["winner"] for r in results])
+
+    assert once() == once()
+
+
+def test_generation_records_both_seats():
+    generator = Generator(stub_evaluator(0), {"simulations": 6, "max_turns": 60},
+                          seed=5, width=4)
+    samples, results = generator.run(games=1)
+    assert results, "no game finished"
+    seats = {sample.player for sample, _ in samples}
+    assert seats == {1, 2}, "a learner that saw one seat trains on winners only"
+
+    finished = [r for r in results if r["winner"] is not None]
+    if finished:
+        outcomes = {outcome for _, outcome in samples}
+        assert outcomes <= {-1, 0, 1}
+        assert 1 in outcomes and -1 in outcomes
+
+
+def test_generation_skips_forced_moves():
+    generator = Generator(stub_evaluator(0), {"simulations": 6, "max_turns": 80},
+                          seed=8, width=3)
+    _, results = generator.run(games=1)
+    assert results
+    assert all(r["searched"] < r["decisions"] for r in results), (
+        "every game has forced decisions, and recording them wastes buffer on one-hot targets"
+    )
+    assert all(r["samples"] == r["searched"] for r in results)
+
+
+def test_generation_is_silent():
+    """No printing during training. The guide's section 8, and it costs real time at scale."""
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        generator = Generator(stub_evaluator(0), {"simulations": 6, "max_turns": 60},
+                              seed=2, width=2)
+        generator.run(positions=30)
+    assert buffer.getvalue() == ""
+
+
+def test_generation_survives_a_full_game_and_restarts():
+    generator = Generator(stub_evaluator(0), {"simulations": 4, "max_turns": 60},
+                          seed=1, width=2)
+    _, results = generator.run(games=3)
+    assert len(results) >= 3
+    for result in results:
+        assert result["turns"] > 0
+        assert result["winner"] in (None, 1, 2)
+
+
+def test_run_needs_a_stopping_condition():
+    generator = Generator(stub_evaluator(0), {"simulations": 4}, seed=0, width=1)
+    with pytest.raises(ValueError, match="stopping condition"):
+        generator.run()
+
+
+# =========================================================================== #
+# The replay buffer                                                          #
+# =========================================================================== #
+
+def test_replay_round_trips_a_real_observation():
+    """float16 must not lose anything the encoder actually puts in an observation."""
+    state = played()
+    observation = np.asarray(encoder.encode(state, 1), dtype=np.float32)
+    assert len(observation) == encoder.SIZE
+    stored = observation.astype(np.float16).astype(np.float32)
+    assert np.allclose(observation, stored, rtol=1e-3, atol=1e-3)
+
+
+def test_sparse_policy_round_trips_through_the_buffer():
+    actions = np.array([0, 5, 200, 324], dtype=np.int64)
+    counts = np.array([10.0, 5.0, 4.0, 1.0])
+    index, probability = sparse_policy(actions, counts)
+
+    buffer = ReplayBuffer(capacity=8)
+    mask = np.zeros(action_space.NUM_ACTIONS, dtype=bool)
+    mask[actions] = True
+    buffer.add(np.zeros((1, encoder.SIZE), dtype=np.float16), index[None, :],
+               probability[None, :], pack_mask(mask)[None, :],
+               np.array([1], dtype=np.int8))
+
+    _, policy, stored_mask, value = buffer.sample(1, np.random.default_rng(0))
+    assert policy[0].sum() == pytest.approx(1.0, abs=2e-3)
+    assert policy[0, 0] == pytest.approx(0.5, abs=2e-3), "END_TURN must not be lost to padding"
+    assert policy[0, 324] == pytest.approx(0.05, abs=2e-3)
+    assert stored_mask[0].tolist() == mask.tolist()
+    assert value[0] == 1.0
+    assert policy[0][~mask].sum() == 0.0
+
+
+def test_buffer_wraps_and_keeps_the_newest():
+    buffer = ReplayBuffer(capacity=4)
+    for step in range(6):
+        buffer.add(
+            np.full((1, encoder.SIZE), step, dtype=np.float16),
+            np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.int16),
+            np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.float16),
+            np.zeros((1, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
+            np.array([1], dtype=np.int8),
+        )
+    assert len(buffer) == 4
+    assert buffer.full
+    order = buffer._ordered()
+    ages = [float(buffer.obs[row, 0]) for row in order]
+    assert ages == [2, 3, 4, 5], "oldest first, newest last"
+
+
+def test_sampling_covers_every_age_band():
+    buffer = ReplayBuffer(capacity=400)
+    for step in range(400):
+        buffer.add(
+            np.full((1, encoder.SIZE), step, dtype=np.float16),
+            np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.int16),
+            np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.float16),
+            np.zeros((1, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
+            np.array([0], dtype=np.int8),
+        )
+    obs, _, _, _ = buffer.sample(256, np.random.default_rng(0))
+    ages = obs[:, 0]
+    for band in range(4):
+        low, high = band * 100, (band + 1) * 100
+        assert ((ages >= low) & (ages < high)).sum() == 64, (
+            "the guide's 25/25/25/25 by age"
+        )
+
+
+def test_add_more_than_capacity_keeps_the_newest():
+    buffer = ReplayBuffer(capacity=3)
+    rows = 10
+    added = buffer.add(
+        np.arange(rows, dtype=np.float16)[:, None].repeat(encoder.SIZE, axis=1),
+        np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.int16),
+        np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.float16),
+        np.zeros((rows, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
+        np.zeros(rows, dtype=np.int8),
+    )
+    assert added == 3
+    assert sorted(float(v) for v in buffer.obs[:, 0]) == [7, 8, 9]
+
+
+# =========================================================================== #
+# The network, and carrying a checkpoint across an observation change        #
+# =========================================================================== #
+
+def test_new_network_matches_the_current_spaces():
+    net = new_network()
+    assert net.obs_size == encoder.SIZE
+    assert net.num_actions == action_space.NUM_ACTIONS
+    assert net.value_activation == "tanh"
+
+
+def test_tanh_value_head_is_bounded_and_off_by_default():
+    from training.structured_net import StructuredPolicyValueNet
+
+    default = StructuredPolicyValueNet()
+    assert default.value_activation == "linear", (
+        "every PPO checkpoint was trained without it; changing the default would silently "
+        "change what they mean"
+    )
+    assert "value_activation" in default.config()
+
+    bounded = new_network()
+    with torch.no_grad():
+        _, value = bounded(torch.randn(16, encoder.SIZE) * 50)
+    assert torch.all(value.abs() <= 1.0)
+
+
+def test_graft_is_a_no_op_at_the_current_size():
+    net = new_network()
+    weights, inserted = graft(net.state_dict(), net.config())
+    assert inserted == 0
+    assert set(weights) == set(net.state_dict())
+
+
+def test_graft_inserts_zero_columns_and_preserves_the_function():
+    """A grafted network must compute what the original did on the observation it knew."""
+    from training.structured_net import CONTEXT_START
+
+    offset, count = insertion_point(encoder.SIZE - 16)
+    assert count == 16
+    assert offset == encoder.LAYOUT["affordability"].start - CONTEXT_START
+
+    net = new_network()
+    original = net.state_dict()
+    narrow = {k: v for k, v in original.items()}
+    narrow["context_mlp.0.weight"] = torch.cat(
+        [original["context_mlp.0.weight"][:, :offset],
+         original["context_mlp.0.weight"][:, offset + count:]], dim=1)
+
+    grafted, inserted = graft(narrow, {**net.config(), "obs_size": encoder.SIZE - 16})
+    assert inserted == 16
+    column = grafted["context_mlp.0.weight"][:, offset:offset + count]
+    assert torch.all(column == 0), "new features must start neutral, not random"
+
+    # The guarantee that makes the graft safe rather than a guess: the inserted columns
+    # cannot contribute anything, whatever the new features hold.
+    rebuilt = new_network()
+    rebuilt.load_state_dict(grafted)
+    varied = torch.randn(4, encoder.SIZE)
+    changed = varied.clone()
+    changed[:, encoder.LAYOUT["affordability"]] += 100.0
+    with torch.no_grad():
+        assert torch.allclose(rebuilt(varied)[0], rebuilt(changed)[0], atol=1e-4)
+
+
+def test_graft_refuses_an_unexplainable_difference():
+    net = new_network()
+    with pytest.raises(ValueError, match="does not match exactly one"):
+        graft(net.state_dict(), {**net.config(), "obs_size": encoder.SIZE - 7})
+
+
+def test_insertion_point_refuses_a_positional_block():
+    # 361 is the tiles block, which is positional: growing it changes a row's width, not the
+    # context vector's, and a zero-column graft would be nonsense.
+    assert insertion_point(encoder.SIZE - 361) is None
+
+
+# =========================================================================== #
+# Checkpoints, config, and the pool                                          #
+# =========================================================================== #
+
+def test_checkpoint_round_trips(tmp_path):
+    from training.alphazero.agent import MCTSAgent
+
+    net = new_network()
+    path = tmp_path / "candidate.pt"
+    torch.save({"config": net.config(),
+                "weights": net.state_dict(),
+                "iteration": 3}, path)
+
+    agent = MCTSAgent.load(path, simulations=4)
+    assert agent.net.obs_size == encoder.SIZE
+    assert agent.net.value_activation == "tanh"
+    assert agent.metadata["iteration"] == 3
+
+    observation = torch.randn(2, encoder.SIZE)
+    with torch.no_grad():
+        assert torch.allclose(net(observation)[1], agent.net(observation)[1])
+
+
+def test_config_rejects_an_unknown_key():
+    with pytest.raises(KeyError, match="unknown setting"):
+        Config({"mtcs_simulations": 200})
+
+
+def test_config_parses_the_shipped_file():
+    import pathlib
+
+    values = parse(pathlib.Path("configs/train.yaml").read_text(encoding="utf-8"))
+    config = Config(values)
+    assert config["mcts_simulations"] > 0
+    assert config["batch_size"] > 0
+    assert isinstance(config["warm_start"], str)
+
+
+def test_config_refuses_nesting():
+    with pytest.raises(ValueError, match="flat"):
+        parse("outer:\n  inner: 1\n")
+
+
+def test_config_reads_scalars():
+    values = parse("a: 1\nb: 2.5\nc: true\nd: text  # comment\ne: 20_000\n")
+    assert values == {"a": 1, "b": 2.5, "c": True, "d": "text", "e": 20000}
+
+
+def test_champion_paths_are_separate():
+    from training import champion as ppo
+    from training.alphazero import champion as az
+
+    assert az.CHAMPION != ppo.CHAMPION, (
+        "the two lineages must not overwrite each other — the PPO champion is kept"
+    )
+    assert az.RECORD != ppo.RECORD
+    assert az.PPO_CHAMPION == ppo.CHAMPION
+
+
+def test_champion_load_returns_none_for_a_missing_file(tmp_path):
+    from training.alphazero import champion as az
+
+    assert az.load(tmp_path / "nothing.pt") is None
+
+
+def test_first_promotion_is_gated(tmp_path, monkeypatch):
+    """The hole in the older gate must not be reproduced here.
+
+    ``CLAUDE.md`` records ``training.champion.promote`` installing without a match whenever
+    no champion loads. A first AlphaZero candidate still has to beat the heuristic.
+    """
+    from training.alphazero import champion as az
+
+    monkeypatch.setattr(az, "MODELS", tmp_path)
+    monkeypatch.setattr(az, "CHAMPION", tmp_path / "champion_az.pt")
+    monkeypatch.setattr(az, "RECORD", tmp_path / "champion_az.json")
+    monkeypatch.setattr(az, "PPO_CHAMPION", tmp_path / "champion.pt")
+
+    net = new_network()
+    candidate = tmp_path / "candidate.pt"
+    torch.save({"config": net.config(), "weights": net.state_dict()}, candidate)
+
+    played = []
+
+    def losing(a, b, games=300, seed=0, **kwargs):
+        played.append((a["kind"], b["kind"]))
+        return {"wins": 10, "losses": 90, "truncated": 0, "games": 100,
+                "win_rate": 0.10, "ci": (0.05, 0.18), "ci_width": 0.13}
+
+    monkeypatch.setattr("training.alphazero.arena.compete", losing)
+    promoted, reason = az.promote(candidate, games=100, log=lambda *_: None)
+
+    assert not promoted, "an untrained network must not become the champion"
+    assert "not shown better" in reason
+    assert played, "the first candidate must actually be played, not waved through"
+    assert played[0] == ("mcts", "heuristic"), "the fixed baseline is the first-run gate"
+    assert not (tmp_path / "champion_az.pt").exists()
+
+
+def test_promotion_refuses_a_candidate_that_only_beats_the_champion(tmp_path, monkeypatch):
+    """Beating the champion is necessary and not sufficient: a policy can climb the ladder
+    by learning the champion's habits while getting worse at the game."""
+    from training.alphazero import champion as az
+
+    net = new_network()
+    candidate = tmp_path / "candidate.pt"
+    reigning = tmp_path / "champion_az.pt"
+    torch.save({"config": net.config(), "weights": net.state_dict()}, candidate)
+    torch.save({"config": net.config(), "weights": net.state_dict()}, reigning)
+
+    monkeypatch.setattr(az, "MODELS", tmp_path)
+    monkeypatch.setattr(az, "CHAMPION", reigning)
+    monkeypatch.setattr(az, "RECORD", tmp_path / "champion_az.json")
+    monkeypatch.setattr(az, "PPO_CHAMPION", tmp_path / "champion.pt")
+    (tmp_path / "champion_az.json").write_text(json.dumps({"beat_heuristic": 0.70}),
+                                               encoding="utf-8")
+
+    def results(a, b, games=300, seed=0, **kwargs):
+        if b["kind"] == "heuristic":                       # collapsed against the baseline
+            return {"wins": 40, "losses": 60, "truncated": 0, "games": 100,
+                    "win_rate": 0.40, "ci": (0.31, 0.50), "ci_width": 0.19}
+        return {"wins": 70, "losses": 30, "truncated": 0, "games": 100,   # but beat the champ
+                "win_rate": 0.70, "ci": (0.60, 0.78), "ci_width": 0.18}
+
+    monkeypatch.setattr("training.alphazero.arena.compete", results)
+    promoted, reason = az.promote(candidate, games=100, log=lambda *_: None)
+
+    assert not promoted
+    assert "overfitted to the champion" in reason
+
+
+@pytest.mark.slow
+def test_parallel_pool_generates():
+    """The pool must start on Windows spawn and come back with usable arrays."""
+    from training.alphazero.config import Config
+    from training.alphazero.workers import ParallelSelfPlay
+
+    net = new_network()
+    config = Config({"self_play_workers": 2, "envs_per_worker": 2,
+                     "mcts_simulations": 4, "max_turns": 60})
+    pool = ParallelSelfPlay(net, config)
+    try:
+        arrays, results = pool.generate(60)
+    finally:
+        pool.close()
+
+    obs, index, probability, mask, value = arrays
+    assert len(obs) >= 60
+    assert obs.shape[1] == encoder.SIZE
+    assert index.shape[1] == replay_buffer.POLICY_TOP_K
+    assert set(np.unique(value).tolist()) <= {-1, 0, 1}
+    assert obs.dtype == np.float16
+
+
+@pytest.mark.slow
+def test_workers_do_not_all_generate_the_same_games():
+    """Every worker runs the same code from the same config; without distinct identities the
+    pool would burn fourteen cores producing one core's worth of data."""
+    from training.alphazero.config import Config
+    from training.alphazero.workers import ParallelSelfPlay
+
+    net = new_network()
+    config = Config({"self_play_workers": 2, "envs_per_worker": 2,
+                     "mcts_simulations": 4, "max_turns": 60})
+    pool = ParallelSelfPlay(net, config)
+    try:
+        (obs, *_), _ = pool.generate(80)
+    finally:
+        pool.close()
+
+    half = len(obs) // 2
+    assert not np.array_equal(obs[:half], obs[half:2 * half])
+
+
+def test_trainer_learns_a_step(tmp_path):
+    """One gradient step must run end to end and move the weights."""
+    from training.alphazero.config import Config
+    from training.alphazero.trainer import Trainer
+
+    net = new_network()
+    config = Config({"run_directory": str(tmp_path), "batch_size": 8,
+                     "replay_buffer_size": 64, "learning_rate": 1e-3})
+    trainer = Trainer(net, config, log=lambda *_: None)
+
+    rows = 32
+    mask = np.zeros((rows, action_space.NUM_ACTIONS), dtype=bool)
+    mask[:, :5] = True
+    index = np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.int16)
+    index[:] = replay_buffer.PAD_INDEX
+    index[:, 0] = 3
+    probability = np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.float16)
+    probability[:, 0] = 1.0
+    trainer.buffer.add(
+        np.random.default_rng(0).random((rows, encoder.SIZE)).astype(np.float16),
+        index, probability,
+        np.stack([pack_mask(row) for row in mask]),
+        np.ones(rows, dtype=np.int8),
+    )
+
+    before = net.policy_head.weight.detach().clone()
+    stats = trainer.learn(3)
+    assert stats["batches"] == 3
+    assert stats["policy_loss"] > 0
+    assert not torch.allclose(before, net.policy_head.weight)
+
+    path = trainer.checkpoint("test")
+    assert path.is_file()
+    stored = torch.load(path, map_location="cpu", weights_only=False)
+    assert stored["config"] == net.config()
+    assert stored["lineage"] == "alphazero"
+
+    lines = (tmp_path / "metrics.jsonl")
+    trainer._record({"iteration": 1, "total_games": 0, "buffer": rows,
+                     "generate_seconds": 0.0, "train_seconds": 0.0,
+                     "elapsed_minutes": 0.0})
+    assert json.loads(lines.read_text(encoding="utf-8").splitlines()[0])["iteration"] == 1
+
+
+def test_report_reads_a_run_and_tolerates_a_half_written_line(tmp_path):
+    """The trainer appends while the reader reads, so the last line may be incomplete."""
+    from training.alphazero import report
+
+    complete = json.dumps({
+        "iteration": 1, "total_games": 10, "elapsed_minutes": 1.0, "buffer": 100,
+        "generate_seconds": 25.0, "train_seconds": 5.0, "positions_per_second": 300.0,
+        "policy_loss": 1.2, "value_loss": 0.3, "entropy": 1.1,
+        "evaluation": {"win_rate": 0.6, "ci": [0.5, 0.7], "truncated": 0},
+    })
+    partial = '{"iteration": 2, "total_ga'
+    (tmp_path / "metrics.jsonl").write_text(complete + "\n" + partial, encoding="utf-8")
+    entries = report.load(tmp_path)
+    assert len(entries) == 1, "a partial line must be skipped, not crash the reader"
+
+    summary = report.summarise(entries)
+    assert summary["games"] == 10
+    assert summary["best_evaluation"] == 0.6
+    assert report.evaluations(entries) == [(1, entries[0]["evaluation"])]
+
+    lines = []
+    report.report(tmp_path, full=True, log=lines.append)
+    assert any("60.0%" in line for line in lines)
+
+
+def test_report_says_so_when_there_is_no_run(tmp_path):
+    from training.alphazero import report
+
+    lines = []
+    assert report.report(tmp_path, log=lines.append) == {}
+    assert "has a run started" in " ".join(lines)
+
+
+@pytest.mark.slow
+def test_arena_result_does_not_depend_on_worker_count():
+    """An evaluator whose answer moves with the machine it ran on is not an evaluator.
+
+    Not compared against ``play_match``: that lets each agent's RNG carry from one game to
+    the next, so game 17 depends on the sixteen before it, which cannot be reproduced when
+    the games are dealt out across processes. ``arena`` re-seeds per game instead, which is
+    what makes this equality hold. The two therefore sample the same quantity by different
+    draws — see the module docstring.
+    """
+    from training.alphazero.arena import compete
+
+    one = compete({"kind": "heuristic", "seed": 0}, {"kind": "greedy", "seed": 0},
+                  games=16, seed=555, workers=1, max_turns=400)
+    many = compete({"kind": "heuristic", "seed": 0}, {"kind": "greedy", "seed": 0},
+                   games=16, seed=555, workers=4, max_turns=400)
+
+    assert (one["wins"], one["losses"], one["truncated"]) ==            (many["wins"], many["losses"], many["truncated"])
+    assert one["wins"] > one["losses"], "the heuristic must still beat greedy"
+
+
+@pytest.mark.slow
+def test_arena_rank_orders_candidates_best_first(tmp_path):
+    """The step D17 insists on: candidates are compared by *playing*, not by a stored score."""
+    from training.alphazero.arena import rank
+
+    strong = tmp_path / "strong.pt"
+    weak = tmp_path / "weak.pt"
+    net = new_network()
+    torch.save({"config": net.config(), "weights": net.state_dict()}, strong)
+    torch.save({"config": net.config(), "weights": net.state_dict()}, weak)
+
+    ordered = rank([strong, weak], opponent={"kind": "random", "seed": 0},
+                   games=8, simulations=2, workers=2, log=lambda *_: None)
+
+    rates = [r["win_rate"] for r in ordered]
+    assert rates == sorted(rates, reverse=True), "results must come back best-first"
+    assert {r["path"] for r in ordered} == {str(strong), str(weak)}, "every candidate played"
+    assert all(r["games"] == 8 for r in ordered)
+    # The two checkpoints hold identical weights, so a paired comparison — same seed, same
+    # opponent, same seat rotation — must give them identical records. If it does not, the
+    # candidates are not being compared on the same games and the ranking means nothing.
+    assert rates[0] == rates[1], "identical networks must score identically on paired games"
+
+
+def test_arena_builds_every_agent_kind_it_claims_to(tmp_path):
+    from training.alphazero.arena import build_agent
+
+    net = new_network()
+    path = tmp_path / "candidate.pt"
+    torch.save({"config": net.config(), "weights": net.state_dict()}, path)
+
+    assert build_agent({"kind": "heuristic", "noise": 0}) is not None
+    assert build_agent({"kind": "greedy"}) is not None
+    assert build_agent({"kind": "random"}) is not None
+    assert build_agent({"kind": "mcts", "path": path, "simulations": 4}) is not None
+    assert build_agent({"kind": "policy", "path": path}) is not None
+    with pytest.raises(ValueError, match="unknown agent kind"):
+        build_agent({"kind": "telepathy"})
+
+
+def test_evaluator_ladder_skips_a_missing_rung(monkeypatch):
+    from training.alphazero import evaluator
+
+    monkeypatch.setattr(evaluator, "_opponent", lambda name: None)
+    assert evaluator.ladder(object(), include=("champion",)) == {"champion": None}
+
+
+def test_better_needs_the_interval_to_clear_the_threshold():
+    from training.alphazero.evaluator import better
+
+    assert not better({"win_rate": 0.52, "ci": (0.47, 0.57)})
+    assert better({"win_rate": 0.60, "ci": (0.55, 0.65)})
+
+
+@pytest.mark.slow
+def test_warm_started_agent_beats_random():
+    """A sanity floor for the whole play path: load, determinize, search, move.
+
+    Deliberately measured on the *warm-started* network rather than a fresh one. An untrained
+    network searching 16 simulations is a random policy steered by a random value function,
+    and the first version of this test asserted it would beat random play: it drew 0-0,
+    because neither side can reach 15 points inside the turn cap. That is a fact about
+    untrained play, not about the pipeline, so it made a bad floor. The grafted champion is a
+    real policy, so this now fails only if something in load/determinize/search/move is
+    actually broken.
+    """
+    import pathlib
+
+    from catan.agents import RandomAgent, play_match
+    from training.alphazero.agent import MCTSAgent
+    from training.alphazero.network import load_for_alphazero
+
+    source = pathlib.Path("models/champion.pt")
+    if not source.is_file():
+        pytest.skip("no checkpoint to warm-start from")
+
+    torch.set_num_threads(2)
+    net, _ = load_for_alphazero(source)
+    agent = MCTSAgent(net, simulations=16, temperature=0.0, seed=0)
+    tally = play_match({1: agent, 2: RandomAgent(0)}, games=12, seed=500,
+                       ruleset=RANKED_1V1, max_turns=400)
+    assert tally[1] > tally[2], tally

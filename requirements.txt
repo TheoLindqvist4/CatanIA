@@ -1,2 +1,6 @@
 pytest>=8.0
 pillow>=10.0
+
+# Optional. Only benchmark/benchmark.py uses it, and only to report CPU and memory
+# utilisation; without it those two fields are omitted from the results rather than guessed.
+# psutil>=5.9

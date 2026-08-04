@@ -1,0 +1,73 @@
+# AlphaZero self-play — the running configuration.
+#
+# Read by training.alphazero.config.load_config, which parses flat "key: value" lines only.
+# Every key here must exist in config.DEFAULTS or the run refuses to start; that is deliberate,
+# because a training run silently misconfigured by a typo is a wasted afternoon that looks
+# like a bad idea.
+#
+# Where a value differs from section 22 of docs/catan_alphazero_implementation_guide.md the
+# guide's number is quoted beside it. The differences are all one thing: this machine has 20
+# CPU cores and no GPU, and the guide's configuration assumes CPU workers feeding a GPU.
+# docs/decisions/0023-alphazero-self-play.md holds the arithmetic.
+
+# --- self-play ----------------------------------------------------------------------- #
+self_play_workers: 14              # guide: 16 — six cores left for the trainer and the UI
+envs_per_worker: 12                # games in flight per worker, and the eval batch size.
+                                   # Also how long the pipeline takes to deliver: games in a
+                                   # worker advance in lockstep and so finish together.
+mcts_simulations: 96               # guide: 200
+max_turns: 400
+
+# --- exploration --------------------------------------------------------------------- #
+# dirichlet_weight is 0.10, not AlphaZero's 0.25, and mcts_simulations is 96 rather than 48.
+# Both come from one measurement rather than from taste. Taking a clean 400-simulation search
+# as the reference, the fraction of positions where a setting picks the same best move:
+#
+#     48 sims, noise 0.25    62%       <- what the first run trained on
+#     48 sims, noise 0.10    68%
+#     96 sims, noise 0.10    78%
+#    160 sims, noise 0.10    80%
+#
+# The raw policy already agrees 58% of the time, so the first setting was training on labels
+# four points better than what the network already knew — almost no signal, and enough label
+# noise to undo it. 96/0.10 is five times the signal for twice the cost; 160 buys two more
+# points for another 40% of the throughput and is not worth it.
+temperature: 1.0
+temperature_final: 0.15
+temperature_opening_turns: 20      # guide: 20
+c_puct: 1.5
+fpu: 0.25
+dirichlet_alpha: 0.5
+dirichlet_weight: 0.10
+
+# --- replay ------------------------------------------------------------------------- #
+replay_buffer_size: 220000         # guide: 2000000 — 15 GB in float32 at this observation
+min_buffer: 4000
+
+# --- learning ------------------------------------------------------------------------ #
+batch_size: 512                    # guide: 512
+training_batches: 60               # guide: 1000, paired with 20000 games per iteration
+generate_seconds: 35               # self-play per iteration, as a clock rather than a count
+positions_per_iteration: 0         # 0 means "use the clock"; a count idles most of the pool
+learning_rate: 0.00007             # guide: 0.001 — warm-started, and stage 2 drifted at 2e-4
+weight_decay: 0.0001
+value_weight: 1.0
+grad_clip: 1.0
+
+# --- evaluation and promotion --------------------------------------------------------- #
+# The in-loop check measures the network, not the searcher, and is cheap on purpose:
+# play_match is sequential and a searching agent runs the network once per simulation at
+# batch 1, so 200 games at 32 simulations costs ~13 minutes. At 0 simulations the agent plays
+# its raw policy — one forward per move, ~40 seconds — which answers the only question the
+# loop needs answered. Whether search helps is settled once, by the promotion gate.
+evaluation_games: 150              # guide: 1000 — the Wilson bound decides, not the count
+promotion_games: 400
+promotion_threshold: 0.55          # guide: 0.55
+evaluate_every: 20
+eval_simulations: 0                # 0 = the raw policy
+
+# --- housekeeping --------------------------------------------------------------------- #
+checkpoint_interval_minutes: 15    # guide: 30
+seed: 0
+warm_start: checkpoints/az_snapshots/iter_61.pt
+run_directory: checkpoints/alphazero

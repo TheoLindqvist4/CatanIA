@@ -48,34 +48,77 @@ OPPONENTS = {
 }
 RULESETS = {"ranked1v1": RANKED_1V1, "base": BASE_GAME}
 
+#: Simulations the AlphaZero champion thinks for per move in the browser. Imported from the
+#: promotion gate rather than chosen here: a win rate belongs to a ``(weights, simulations)``
+#: pair, and a champion measured at one number and played at another is a published figure for
+#: a player nobody faces. Measured at about 32 ms a decision, which nobody notices.
+try:
+    from training.alphazero.champion import CHAMPION_SIMULATIONS as AZ_SIMULATIONS
+except ImportError:                                # no torch on this checkout
+    AZ_SIMULATIONS = 32
+
+
 def _register_learned():
-    """Offer the champion, if there is a usable one.
+    """Offer whichever trained models this checkout actually has.
+
+    There are two lineages and they are offered separately, because they are trained by
+    different methods and a person may reasonably want to play either:
+
+    ``learned``     the PPO champion, ``models/champion.pt``
+    ``alphazero``   the AlphaZero champion, ``models/champion_az.pt``
 
     Read from ``models/``, never from ``checkpoints/``: a training run owns the latter and
     rewrites it constantly, and its "best so far" is only the best within that run. A game
-    must not be affected by a fine-tune happening at the same time, and must never be handed
-    a model that a run later turned out to have made worse. See :mod:`training.champion`.
+    must not be affected by a run happening at the same time, and must never be handed a
+    model that the run later turned out to have made worse. That is what lets somebody play
+    in one window while training happens in another. See :mod:`training.champion` and
+    :mod:`training.alphazero.champion`.
 
     Every failure — no file, no PyTorch, a model built for a different observation or action
-    space — means the same thing here: offer the heuristic instead.
+    space — means the same thing here: do not offer that entry.
     """
     try:
         from training import champion
     except ImportError:
         return                                    # no torch on this checkout
 
-    if champion.load() is None:
-        return
-    OPPONENTS["learned"] = lambda seed: champion.load(temperature=0.35, seed=seed)
+    try:
+        from training.alphazero import champion as az
+    except ImportError:
+        az = None
+
+    if champion.load() is not None:
+        OPPONENTS["learned"] = lambda seed: champion.load(temperature=0.35, seed=seed)
+    elif az is not None and az.load_previous_technique() is not None:
+        # The champion file exists but was promoted at an older ``encoder.SIZE``, so
+        # ``champion.load`` refuses it — correctly, because a stale model plays nonsense.
+        # It is not stale in any way that matters, though: the observation *grew*, and
+        # ``network.graft`` widens the one affected layer with zero columns, so the grafted
+        # network computes exactly the function that was measured at 71.6% against the
+        # heuristic. Offering it here restores a learned opponent to the interface without
+        # touching ``models/champion.pt`` or going near the promotion gate — a promotion is a
+        # decision the gate makes, not a side effect of loading. See
+        # ``docs/decisions/0023-alphazero-self-play.md``.
+        OPPONENTS["learned"] = lambda seed: az.load_previous_technique(
+            temperature=0.35, seed=seed)
+
+    if az is not None and az.load() is not None:
+        OPPONENTS["alphazero"] = lambda seed: az.load(
+            simulations=AZ_SIMULATIONS, temperature=0.35, seed=seed)
 
 
 _register_learned()
 
-#: The strongest opponent available. The trained policy beats the heuristic comfortably, so
-#: it is the default — but it ships as a file under ``models/``, and a champion trained
-#: against a different ``encoder.SIZE`` will not load, so a fresh clone (or one without
-#: PyTorch, or one mid-way through an observation change) falls back to the heuristic.
-DEFAULT_OPPONENT = "learned" if "learned" in OPPONENTS else "hard"
+#: The strongest opponent available, in the order they are preferred.
+#:
+#: AlphaZero first when it exists, because it only exists once it has beaten the fixed
+#: heuristic by a Wilson lower bound above 50% — its promotion gate will not install one that
+#: has not. Both ship as files under ``models/``, and a champion trained against a different
+#: ``encoder.SIZE`` will not load, so a fresh clone (or one without PyTorch, or one mid-way
+#: through an observation change) falls back to the heuristic.
+DEFAULT_OPPONENT = next(
+    (name for name in ("alphazero", "learned") if name in OPPONENTS), "hard"
+)
 
 #: How each opponent is named in the interface, in the order it should be offered.
 #:
@@ -84,7 +127,8 @@ DEFAULT_OPPONENT = "learned" if "learned" in OPPONENTS else "hard"
 #: hardcoded in the HTML would still be clickable and would fail with a 400. The page asks
 #: what is available; it does not assume.
 OPPONENT_LABELS = {
-    "learned": "Learned (strongest)",
+    "alphazero": "AlphaZero (searches)",
+    "learned": "Learned (policy only)",
     "hard": "Hard",
     "medium": "Medium",
     "easy": "Easy",
