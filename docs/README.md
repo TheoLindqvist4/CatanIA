@@ -16,12 +16,12 @@ is for what has been established: how things work, and why they were decided tha
 | [engine.md](engine.md) | How the engine fits together: the layers, the state model, and how to drive a game. **Start here** to use the code. |
 | [ai-surface.md](ai-surface.md) | How to train against it: the action space, the observation, the environment, and the baselines. |
 | [images/board-example.png](images/board-example.png) | A game rendered by `interfaces/render.py`. |
+| [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
+| [audit-2026-08-05-public-arena.md](audit-2026-08-05-public-arena.md) | What it would take to let strangers submit agents, rank them, and play the best of them: the reuse inventory, the verified containment failures, why the seed defeats every submission format, measured throughput and cost, and the decisions to take before writing code. |
 
 Everything that prints lives in `interfaces/`: `render.py` draws a PNG, `cli.py` plays or
 watches a game in the terminal. Both lay the board out from the same `topology` lattice, so
 neither carries positioning logic of its own.
-
-| [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 
 ## Decisions
 
@@ -54,6 +54,8 @@ the reasoning at the time is the point.
 | [0022](decisions/0022-affordability-features.md) | The agent can see how far its hand is from a purchase | accepted |
 | [0023](decisions/0023-alphazero-self-play.md) | AlphaZero-style self-play, beside the PPO lineage | accepted |
 | [0024](decisions/0024-what-a-placement-can-see.md) | What a placement can see: per-resource production, harbour reach | accepted |
+| [0025](decisions/0025-how-big-should-the-network-be.md) | How big the network should be, measured rather than borrowed from Go | accepted |
+| [0027](decisions/0027-where-a-searched-decision-goes.md) | Where a searched decision actually goes, and the six changes that came out of it | accepted |
 
 ## Worth knowing
 
@@ -130,6 +132,28 @@ Consequences that are easy to trip over:
   allow-list is deny-by-default, so a new field on `GameState` is invisible to agents until
   someone adds it deliberately ([0015](decisions/0015-public-view-instead-of-a-cheating-agent.md)).
   `view.my_hand` returns a *copy* — an agent cannot edit the game it is playing.
+- **…but the allow-list stops accidents, not adversaries.** `_state` is a `__slots__` entry, so
+  attribute lookup *succeeds* and `__getattr__` — the allow-list — is never consulted:
+  `info["view"]._state` is the live `GameState`, including the opponent's hand, the dev deck
+  order and, under Balanced Dice, the literal next rolls. Two in-repo agents read it
+  deliberately and are right to. An agent that never touches the view reaches the same object
+  through `sys._getframe`. Fine for first-party code, which is what 0015 designed it for;
+  it is not a boundary for code you did not write
+  ([audit](audit-2026-08-05-public-arena.md#2-blockers-verified-by-execution)).
+- **`info["scores"]` is *true* victory points, including hidden VP cards.** `info["public_scores"]`
+  sits next to it and is the safe one; subtracting gives an opponent's exact hidden VP count.
+  The existing leak tests point at the observation and the view, not at `info`, so nothing
+  catches it ([audit](audit-2026-08-05-public-arena.md#2-blockers-verified-by-execution)).
+- **Every performance constant written down in this repo is 2.4–3.7× optimistic** — `arena.py:5`
+  (56 ms / 5.2 s), `alphazero/agent.py:24` (25 ms), `api.py:60` (32 ms), `benchmark.py:13`
+  (36,000 actions/sec). Re-measure rather than quoting them; a plan built on those
+  under-provisions by about 3×
+  ([audit](audit-2026-08-05-public-arena.md#6-measurements)).
+- **The first-player advantage is zero here, not "real and large".** 49.8% [48.7, 50.9] over
+  8,000 heuristic mirror games, because `setup_sequence` is a snake `[1,2,2,1]` and seat 2 gets
+  picks 2 and 3. Several docstrings still repeat the 4-player folklore. Seat swapping is cheap
+  insurance, not a mandatory variance reducer
+  ([audit](audit-2026-08-05-public-arena.md#first-player-advantage-is-zero-in-this-engine)).
 - **Position value is marginal, not absolute.** `heuristics.settlement_value` divides each
   tile's rate by what the player already produces of that resource. Do not "simplify" it back
   to a sum of pips: that is the encoder's `pip_potential` feature, which answers a different

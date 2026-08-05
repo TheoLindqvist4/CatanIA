@@ -35,7 +35,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from training.alphazero.self_play import Generator, to_arrays
+from training.alphazero.self_play import NUM_ARRAYS, Generator, to_arrays
 
 #: Per-process state, built once by :func:`_configure` and reused for the whole run.
 _WORKER = {}
@@ -119,6 +119,10 @@ class ParallelSelfPlay:
             "fpu": config["fpu"],
             "dirichlet_alpha": config["dirichlet_alpha"],
             "dirichlet_weight": config["dirichlet_weight"],
+            "gumbel": config["gumbel"],
+            "gumbel_actions": config["gumbel_actions"],
+            "playout_cap_probability": config["playout_cap_probability"],
+            "playout_cap_fast": config["playout_cap_fast"],
         }
 
         self._manager = multiprocessing.Manager()
@@ -191,7 +195,7 @@ def _stitch(parts):
         results.extend(games)
     if not arrays:
         empty = np.zeros((0,), dtype=np.float32)
-        return (empty, empty, empty, empty, empty), results
+        return tuple(empty for _ in range(NUM_ARRAYS)), results
     joined = tuple(np.concatenate([piece[i] for piece in arrays], axis=0)
-                   for i in range(5))
+                   for i in range(NUM_ARRAYS))
     return joined, results

@@ -42,6 +42,44 @@ DEFAULTS = {
     "dirichlet_alpha": 0.5,
     "dirichlet_weight": 0.10,  # AlphaZero uses 0.25 at 800 sims; at 96 it flips 24% of labels
 
+    # --- the Gumbel root — implemented, measured, and OFF ------------------------------ #
+    #
+    # ⚠️ This was the highest-leverage change on paper and it measured **worse**, badly.
+    # Agreement of the recorded label with a clean 400-simulation search, paired, 250
+    # positions, against a raw policy that already agrees 72.8%:
+    #
+    #     PUCT 96, noise 0.10        73.2%    +0.4   p=1.00
+    #     Gumbel, c_visit 0.5        59.2%   -13.6   p=0.0019
+    #     Gumbel, c_visit 2          57.2%   -15.6   p=0.0002
+    #     Gumbel, c_visit 5          54.4%   -18.4   p<0.0001
+    #     Gumbel, c_visit 12         55.2%   -17.6   p<0.0001
+    #     Gumbel, c_visit 50 (paper) 49.2%   -23.6   p<0.0001
+    #
+    # Monotone in the scale, and the small-scale limit is not an escape: as sigma goes to
+    # zero the target degenerates to softmax(logits), which is the prior, which scores 72.8%
+    # — still no better than PUCT. There is no setting where it wins.
+    #
+    # **Why, and it is not a bug in the implementation.** Gumbel's improvement guarantee
+    # rests on the Q estimates carrying signal. Here every simulation resamples a *different*
+    # determinized world — a fresh guess at the opponent's hand and the dice deck — and
+    # scores it with a value head measured at 14% of held-out outcome variance. At 96
+    # simulations over ~9.6 legal moves each Q is a handful of samples of a noisy quantity.
+    # sigma(q) then amplifies differences that are mostly determinization variance, and
+    # visit counts, which lean on Q far more weakly, survive it better.
+    #
+    # Kept in the code, off, with tests: it is correct, it is cheap to re-enable, and it
+    # would very likely pay off once the value head is worth leaning on. See 0026.
+    "gumbel": False,
+    "gumbel_actions": 16,      # sampled without replacement; usually the whole legal set
+
+    # --- playout cap randomization ---------------------------------------------------- #
+    #
+    # KataGo measures 1.37x. Here the reason is the second-order one: a game contributes a
+    # quarter as many rows, so the same buffer holds about four times as many distinct
+    # games — and ~900 games was what let the value head memorise board identity.
+    "playout_cap_probability": 0.25,   # chance a move gets the full budget and is recorded
+    "playout_cap_fast": 24,            # simulations for the moves that are not recorded
+
     # --- replay ---------------------------------------------------------------------- #
     "replay_buffer_size": 180_000,  # guide: 2,000,000. The observation is 2,503 floats,
                                     # so this is ~0.9 GB in float16; see replay_buffer.
@@ -61,6 +99,12 @@ DEFAULTS = {
     "value_weight": 1.0,
     "grad_clip": 1.0,
 
+    # --- what the value head is actually trained on ----------------------------------- #
+    "root_value_weight": 0.5,   # target = 0.5*outcome + 0.5*search root value
+    "owner_weight": 0.15,       # final ownership per vertex and road, cross-entropy
+    "margin_weight": 0.15,      # final victory-point margin, MSE
+    "max_per_game": 8,          # rows one game may contribute to a 512-row batch
+
     # --- evaluation and promotion ---------------------------------------------------- #
     #
     # The in-loop check is deliberately cheap and deliberately measures the *network*, not
@@ -73,11 +117,41 @@ DEFAULTS = {
     #
     # Whether the *search* helps is a different question, and it is answered once, properly,
     # by the promotion gate at `promotion_simulations`.
-    "evaluation_games": 100,        # guide: 1,000. Wilson interval decides, not the count.
+    #
+    # ⚠️ `evaluate_every: 0` switches the in-loop check **off**, and that is the default,
+    # because the number it produces is one CLAUDE.md already says not to act on. It scores
+    # the *raw policy*, which has twice been measured moving in the opposite direction to
+    # search-ranked strength — one run read 62.5 -> 60.4 -> 50.5 -> 51.0 and looked finished,
+    # while the arena put its last checkpoint first and its "peak" last.
+    #
+    # It is not free. Measured from five runs' own metrics.jsonl, by differencing the
+    # unaccounted residual on evaluating iterations against non-evaluating ones:
+    #
+    #     az_run_1h        4 evaluations   21.0 s each   2.33% of the run
+    #     az_run_1h_b      4               16.8 s        1.87%
+    #     az_run_2h        9               19.2 s        2.40%
+    #     az_stage1_run    4               19.9 s        3.62%
+    #     az_stage2_run    5               29.2 s        4.38%
+    #
+    # and it is *idle* time: the parent plays 200 sequential games at batch 1 while all
+    # fourteen workers wait. Off, the run snapshots instead (`Trainer.snapshot`) and
+    # `training/alphazero/arena.py` ranks the snapshots afterwards with search, which is the
+    # only ranking this repository considers evidence.
+    #
+    # Set it to 25 to get the smoke alarm back — it is a real smoke alarm, it just costs
+    # 2-4% and cannot be read as progress.
+    "evaluation_games": 200,        # 100 gave +-10 points, which cannot see a real change
     "promotion_games": 400,
     "promotion_threshold": 0.55,
-    "evaluate_every": 20,           # iterations
+    "evaluate_every": 0,            # iterations; 0 = off, and snapshot instead
     "eval_simulations": 0,          # 0 = the raw policy; see above
+    #: What the in-loop check plays against. The reigning AlphaZero champion is the yardstick
+    #: that matters — "did this run produce a better player than the one we have" — and unlike
+    #: the heuristic it is not affected by rule changes. Both sides run at `eval_simulations`,
+    #: so at 0 this is an honest network-against-network comparison; it is still the raw
+    #: policy, and CLAUDE.md's warning that the policy column moves opposite to search-ranked
+    #: strength still applies. The authority remains `training/alphazero/arena.py`.
+    "evaluation_opponent": "champion_az",   # or "heuristic"
 
     # --- housekeeping ---------------------------------------------------------------- #
     "checkpoint_interval_minutes": 15,

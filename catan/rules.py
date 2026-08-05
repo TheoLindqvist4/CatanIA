@@ -543,10 +543,18 @@ def legal_actions(state):
         if state.roads_left[player] > 0 and (
             state.free_roads > 0 or resources.can_afford(hand, ROAD_COST)
         ):
+            # The gate above has just established the two player-wide halves of
+            # `can_build_road` — pieces left and payment — and neither can change while this
+            # loop runs. Asking `can_build_road` would re-establish both 72 more times, and
+            # it measured 46% of `legal_actions`' time. What is left is the per-road half:
+            # the road is free, and it reaches my network. `can_build_road` stays the
+            # authority for every other caller, and
+            # `test_the_road_loop_agrees_with_can_build_road` pins the two together.
+            free = state.edge_owner
             actions += [
                 build_road(r)
                 for r in range(1, NUM_ROADS + 1)
-                if can_build_road(state, player, r)
+                if free[r] == NO_OWNER and is_road_connected(state, player, r)
             ]
         if state.settlements_left[player] > 0 and resources.can_afford(
             hand, SETTLEMENT_COST
@@ -1037,13 +1045,16 @@ def production_rates(state, player):
     from catan.resources import NUM_RESOURCES
 
     per = [0.0] * NUM_RESOURCES
+    owners = state.vertex_owner
+    pieces = state.vertex_piece
+    table = state.board._expected_production()
     for vertex in range(1, NUM_VERTICES + 1):
-        if state.vertex_owner[vertex] != player:
+        if owners[vertex] != player:
             continue
-        yields = PIECE_YIELD[state.vertex_piece[vertex]]
+        yields = PIECE_YIELD[pieces[vertex]]
         if not yields:
             continue
-        for resource, rate in enumerate(state.board.expected_production(vertex)):
+        for resource, rate in enumerate(table[vertex]):
             per[resource] += rate * yields
     return per
 

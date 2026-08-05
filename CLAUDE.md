@@ -86,6 +86,22 @@ path was 57% of training time before this existed. A feature that depends on a *
 go there: the `Board` is shared across every clone and every observer, so a cached per-observer
 value is both stale and a leak.
 
+**Two entry points, one body.** `encode()` returns a list of Python floats and is what every
+interface, test and PPO call site uses — 13 tests assert `isinstance(v, float)`, so it must
+stay that way. `encode_into(state, me, buffer)` writes the same numbers into an `array('f')`
+from `observation_buffer()`, which numpy takes as a buffer instead of unboxing 2,503 Python
+floats. The search uses the second; everything else uses the first, and
+`test_encode_into_matches_the_list_encoding_bit_for_bit` is what stops them drifting. See
+record 0027.
+
+⚠️ **`encoder._survey` is a second implementation of scoring**, and the one-source-of-truth
+rule would otherwise forbid it: it answers what `victory_points`, `public_victory_points`,
+`production_rates` and `trade_rates` answer, in one walk over the board instead of nine.
+`catan.rules` is still the authority. What makes this legal is
+`test_fused_player_scores_agree_with_the_rules`, which drives whole games at 2/3/4 players in
+both rulesets and compares at *every* position. If you change scoring, that test is what will
+tell you the encoder disagrees.
+
 **Encoding a constant is worth nothing.** The cost table is identical in every state, so it
 folds into a bias in one gradient step. What the `affordability` block encodes is the
 *state-dependent* part: cards short, and what closing the gap would cost at the bank given my
@@ -160,6 +176,19 @@ version of the rules.** Re-measure before trusting any number in a champion reco
 finish, so a short measurement measures luck. An early benchmark reported 4 workers as faster
 than 8 for exactly this reason.
 
+⚠️ **A sequential A/B cannot be run on this machine.** Throughput decays monotonically under
+sustained load — measured at 594.9 → 422.5 → 425.6 → 351.2 → 353.2 decisions/sec across five
+minutes — so whichever arm runs *second* loses, whatever it contains. A round-per-variant
+design returned median 1.0013x with range [0.843, 1.170] on a change independently measured at
+1.054x. **Alternate the arms, alternate the order within each pair, and report the median of
+adjacent-pair ratios**, or do not write the number down. Record 0027.
+
+**A searched decision is 32% observation, 19% network, 16% legal-move generation.** Record 0025
+split it 80.9% engine / 19.1% network, which is right but hides that "engine" is two functions:
+`encoder.encode` plus its float32 conversion, and `rules.legal_actions` at 173 calls per
+decision. Record 0027 has the full table and took ~1.2x out of it. What is left is
+`legal_actions`, and the remaining win there needs incremental legality, which is a project.
+
 **Windows spawns rather than forks.** Worker functions must be module-level; a script run from
 a heredoc cannot be a multiprocessing parent because the child cannot re-import `__main__`.
 Torch sizes its OpenMP pool at import, so thread env vars must be set in the *parent* before
@@ -223,6 +252,16 @@ teaches nothing and costs a network evaluation.
 counts a CPU affords, MCTS is a modest improvement over its prior, so starting from a policy
 that already plays is what makes a few hours worth anything. `--cold` does it the guide's way.
 Say which one produced a number.
+
+⚠️ **A warm start builds the *checkpoint's* shape, not `new_network`'s.** `load_for_alphazero`
+reads `checkpoint["config"]`, which is exactly right for an observation change — `graft` widens
+the affected layers and every weight keeps its meaning — and useless for a `width`, `depth` or
+`trunk` change, where no column correspondence exists. So changing `new_network`'s defaults
+while `warm_start` points at an older checkpoint **does nothing**. That is not hypothetical: it
+is what happened when the defaults moved to 374,331 parameters — runs kept training the
+reigning 200,379-parameter shape with `aux=False`, so the auxiliary targets self-play was
+computing were dropped by the loss, and nothing raised. `build_network` now prints every key
+that differs. To actually change shape: `training/alphazero/distil.py`, or `--cold`.
 
 ⚠️ **The AlphaZero loop's win-rate column measures the raw policy, and the champion plays with
 search. They move in opposite directions — twice measured, in both directions.** In the run on
@@ -298,4 +337,8 @@ Recorded so it is not re-attempted.
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
 
 Run the full suite before committing: `python -m pytest tests -q` (~2 min). Two tests are
-timing-based and flake under load — re-run them alone before believing a failure.
+timing-based and flake under load — re-run them alone before believing a failure, **and check
+`tasklist | grep python` first, because "alone" is not "unloaded"**.
+`test_sharing_the_stream_makes_cloning_much_cheaper` asserts an absolute `< 10 us` and read
+15.8 µs against a live training run, where the same unchanged code measures 4.4 µs on a quiet
+machine. The threshold is right; the box was busy.

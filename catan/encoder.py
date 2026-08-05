@@ -22,6 +22,23 @@ actually see. Specifically it never contains:
 ``tests/test_encoder.py`` checks this by mutating hidden state and asserting the observation
 does not move. That is a leak detector, not a documentation exercise.
 
+Two entry points, one body
+--------------------------
+:func:`encode` returns a list of Python floats and is what every interface, test and PPO
+call site uses. :func:`encode_into` writes the *same numbers* into a caller-owned
+``array('f')`` from :func:`observation_buffer`, which a search can then hand to numpy as a
+view rather than converting element by element.
+
+That second door exists because of one measurement. A leaf evaluation encodes and then
+converts, and the conversion was costing almost half as much as the encoding itself:
+``np.fromiter`` over 2,503 Python floats is 42 us against 95 us for the encode, and it runs
+once per simulation. Writing float32 in the first place makes the conversion
+``np.frombuffer`` — 0.5 us — and the template reset a memcpy rather than a list copy. The
+arithmetic is unchanged and happens in float64 either way; only the *store* is narrower, and
+the consumer was casting to float32 regardless. ``tests/test_encoder.py`` asserts the two
+doors agree bit for bit, which is what makes this a representation change rather than a
+second encoder.
+
 Layout
 ------
 :data:`LAYOUT` maps a name to the ``slice`` it occupies, so a consumer can pull out the
@@ -41,17 +58,26 @@ Every value is scaled into roughly ``[0, 1]``, using exact maxima where one exis
 resource count cannot exceed the bank's 19) and a documented soft cap otherwise.
 """
 
+import array
+
 from catan import rules
 from catan.board import GENERIC_HARBOUR
 from catan.dev_cards import DECK_SIZE as DEV_DECK_SIZE
-from catan.dev_cards import DECK_COUNTS, ROAD_BUILDING_ROADS, DevCard
+from catan.dev_cards import (
+    AWARD_VICTORY_POINTS,
+    DECK_COUNTS,
+    ROAD_BUILDING_ROADS,
+    DevCard,
+)
 from catan.resources import (
     BANK_PER_RESOURCE,
     BANK_RATE,
+    GENERIC_HARBOUR_RATE,
     NUM_RESOURCES,
     PURCHASE_NAMES,
     PURCHASES,
     Resource,
+    SPECIFIC_HARBOUR_RATE,
     total,
 )
 from catan.state import (
@@ -60,6 +86,8 @@ from catan.state import (
     MAX_ROADS,
     MAX_SETTLEMENTS,
     NO_OWNER,
+    PIECE_VICTORY_POINTS,
+    PIECE_YIELD,
     Phase,
     Piece,
 )
@@ -385,9 +413,30 @@ def _static_template(board):
     return out
 
 
+def _static_template_array(board):
+    """The same template as an ``array('f')``, so resetting a buffer is a memcpy.
+
+    Cached beside the list one rather than derived from it per call: the conversion is the
+    very cost :func:`encode_into` exists to avoid, and a board outlives a whole game.
+    """
+    cached = board.__dict__.get("_observation_template_f")
+    if cached is None:
+        cached = array.array("f", _static_template(board))
+        board.__dict__["_observation_template_f"] = cached
+    return cached
+
+
 # --------------------------------------------------------------------------- #
 # Encoding                                                                    #
 # --------------------------------------------------------------------------- #
+
+def _observer(state, me):
+    if me is None:
+        me = state.current_player
+    if me not in state.players:
+        raise ValueError(f"player must be in 1..{state.num_players}, got {me}")
+    return me
+
 
 def encode(state, me=None):
     """The observation ``me`` is entitled to, as a list of :data:`SIZE` floats.
@@ -398,25 +447,121 @@ def encode(state, me=None):
             explicitly in search, because during a discard the current player may be an
             opponent.
     """
-    if me is None:
-        me = state.current_player
-    if me not in state.players:
-        raise ValueError(f"player must be in 1..{state.num_players}, got {me}")
+    me = _observer(state, me)
+    return _fill(state, me, _static_template(state.board).copy())
 
-    out = _static_template(state.board).copy()
+
+def observation_buffer():
+    """A reusable float32 buffer for :func:`encode_into`.
+
+    ``array`` rather than a list because the caller wants bytes: a search converts every
+    leaf observation to a numpy row, and from an ``array('f')`` that is ``np.frombuffer`` —
+    a cast of a pointer — where from a list it is a 2,503-element unboxing loop.
+    """
+    return array.array("f", bytes(SIZE * 4))
+
+
+def encode_into(state, me, out):
+    """:func:`encode`'s numbers, written into ``out`` from :func:`observation_buffer`.
+
+    Returns ``out``, so a caller can wrap the call in ``np.frombuffer``.
+
+    ⚠️ ``out`` is **overwritten**, and a caller that hands the same buffer to two searches
+    gets one observation twice. Give each search its own; they are 10 KB.
+    """
+    me = _observer(state, me)
+    out[:] = _static_template_array(state.board)
+    return _fill(state, me, out)
+
+
+def _fill(state, me, out):
+    """Everything that is play rather than layout, written over a reset template.
+
+    Shared by both entry points so the list and the buffer cannot drift apart —
+    ``test_encode_into_matches_the_list_encoding_bit_for_bit`` is what proves they do not.
+    """
     slots = player_slots(state, me)
+    # One walk over the board, rather than the nine that four rules functions cost between
+    # them. See _survey.
+    points, production, rates_by_player = _survey(state)
     # Hoisted because two blocks want it: the player block reports it as a feature, and the
     # affordability block prices deficits through it. `rates` is always *me*'s.
-    rates = rules.trade_rates(state, me)
+    rates = rates_by_player[me]
 
     _encode_tiles(state, out)
-    _encode_vertices(state, out, me, slots)
-    _encode_roads(state, out, me, slots)
-    _encode_players(state, out, me, slots, rates)
+    _encode_board(state, out, me, slots)
+    _encode_players(state, out, me, slots, points, production, rates_by_player)
     _encode_affordability(state, out, me, rates)
     _encode_history(state, out, me, slots)
     _encode_global(state, out, me)
     return out
+
+
+def _survey(state):
+    """Victory points, production and trade rates for every player, in one walk.
+
+    Returns ``({player: points}, {player: [rate per resource]}, {player: [give per
+    resource]})``, where ``points`` excludes hidden Victory Point cards — it is
+    :func:`catan.rules.public_victory_points`.
+
+    **This is a second implementation of scoring, and that is normally forbidden here.** The
+    justification is arithmetic: :func:`catan.rules.victory_points`,
+    :func:`~catan.rules.public_victory_points`, :func:`~catan.rules.production_rates` and
+    :func:`~catan.rules.trade_rates` each walk all 54 vertices, and one encode called them
+    nine times between them for two players — nine passes to answer three questions about
+    the same buildings. The block measured 43-45% of an encode, and an encode runs once per
+    simulation.
+
+    What makes it legal rather than a rule waiting to diverge is
+    ``test_fused_player_scores_agree_with_the_rules``, which drives whole games at two, three
+    and four players and asserts every value here equals the rules' own at *every* position.
+    :mod:`catan.rules` remains the authority; this is a faster route to the same answer, and
+    the test is what says so.
+    """
+    from catan.resources import NUM_RESOURCES
+
+    owners = state.vertex_owner
+    pieces = state.vertex_piece
+    board = state.board
+    harbours_at = board.harbours_at
+    expected = board.expected_production
+
+    points = {player: 0 for player in state.players}
+    production = {player: [0.0] * NUM_RESOURCES for player in state.players}
+    rates = {player: [BANK_RATE] * NUM_RESOURCES for player in state.players}
+
+    for vertex in range(1, NUM_VERTICES + 1):
+        owner = owners[vertex]
+        if owner == NO_OWNER:
+            continue
+        piece = pieces[vertex]
+
+        # Before the zero-yield short-circuit below: a piece worth points but yielding
+        # nothing is not a case today, and silently losing its points the day it is would be
+        # a scoring bug nothing raises on.
+        points[owner] += PIECE_VICTORY_POINTS[piece]
+
+        for harbour in harbours_at(vertex):
+            if harbour is GENERIC_HARBOUR:
+                mine = rates[owner]
+                for resource in range(NUM_RESOURCES):
+                    if mine[resource] > GENERIC_HARBOUR_RATE:
+                        mine[resource] = GENERIC_HARBOUR_RATE
+            elif rates[owner][harbour] > SPECIFIC_HARBOUR_RATE:
+                rates[owner][harbour] = SPECIFIC_HARBOUR_RATE
+
+        yields = PIECE_YIELD[piece]
+        if not yields:
+            continue
+        mine = production[owner]
+        for resource, rate in enumerate(expected(vertex)):
+            mine[resource] += rate * yields
+
+    # `None` is the "nobody holds it" sentinel, not player 0 — indexing with it raises.
+    for holder in (state.largest_army_holder, state.longest_road_holder):
+        if holder in points:
+            points[holder] += AWARD_VICTORY_POINTS
+    return points, production, rates
 
 
 def _encode_tiles(state, out):
@@ -425,22 +570,31 @@ def _encode_tiles(state, out):
     out[at + NUM_RESOURCES + 1 + len(ROLLS) + 1] = 1.0
 
 
-def _encode_vertices(state, out, me, slots):
-    """Ownership and buildability. Harbours and pip potential come from the template.
+def _encode_board(state, out, me, slots):
+    """The vertices block and the roads block, which want the same walk.
 
-    The two buildability flags are derived in one pass over what is *owned* rather than by
-    asking :func:`catan.rules.respects_distance_rule` and
-    :func:`catan.rules.touches_own_road` per vertex. Those were 108 calls per encode and
-    38% of what encoding cost after the static template; there are at most ten settlements
-    and fifteen roads to walk instead of fifty-four vertices to interrogate.
+    Harbours and pip potential come from the template; what is written here is ownership and
+    the three buildability flags.
+
+    The flags are derived from what is *owned* rather than by asking
+    :func:`catan.rules.respects_distance_rule` and :func:`catan.rules.touches_own_road` per
+    vertex. Those were 108 calls per encode and 38% of what encoding cost after the static
+    template; there are at most ten settlements and fifteen roads to walk instead of
+    fifty-four vertices to interrogate.
+
+    Vertices and roads are one function because the two blocks were computing the same thing
+    twice: which vertices my roads touch decides both a vertex's "reachable from my road
+    network" flag and a road's "I could build here". The roads block walked all 72 roads to
+    rebuild a set the vertex loop had already built, and then took a third pass over the 54
+    vertices to turn it into reachability. Now the vertex loop, which is running anyway,
+    accumulates it.
 
     The rules remain the authority — ``test_buildability_flags_agree_with_the_rules``
-    cross-checks every vertex of every board against them, which is what keeps this
-    shortcut honest.
+    cross-checks against them, which is what keeps this shortcut honest.
     """
-    base = LAYOUT["vertices"].start
     owners = state.vertex_owner
     pieces = state.vertex_piece
+    edges = state.edge_owner
 
     blocked = set()
     for vertex in range(1, NUM_VERTICES + 1):
@@ -450,12 +604,16 @@ def _encode_vertices(state, out, me, slots):
 
     my_junctions = set()
     for road in range(1, NUM_ROADS + 1):
-        if state.edge_owner[road] == me:
+        if edges[road] == me:
             my_junctions.update(ROAD_VERTICES[road])
 
     # offset of the two buildability flags within a vertex block, past the harbour
     # one-hot and the pip potential
     flags = (MAX_PLAYERS + 1) + 1 + HARBOUR_KINDS + 1
+    base = LAYOUT["vertices"].start
+    # Vertices I can build outward from: mine, or empty and met by one of my roads — the
+    # same rule as :func:`catan.rules.is_road_connected`, for the whole board at once.
+    reachable = set()
 
     for vertex in range(1, NUM_VERTICES + 1):
         at = base + (vertex - 1) * VERTEX_FEATURES
@@ -471,46 +629,32 @@ def _encode_vertices(state, out, me, slots):
         if vertex in my_junctions:
             out[at + 1] = 1.0
 
+        if owner == me or (owner == NO_OWNER and vertex in my_junctions):
+            reachable.add(vertex)
 
-def _reachable_vertices(state, me):
-    """Vertices ``me`` can build outward from.
-
-    A junction works if I have a building on it, or it is empty and one of my roads meets
-    it — the same rule as :func:`catan.rules.is_road_connected`, computed once for the
-    whole board instead of per road. ``test_buildability_flags_agree_with_the_rules``
-    checks the two agree, which is what keeps this shortcut honest.
-    """
-    touching = set()
-    for road in range(1, NUM_ROADS + 1):
-        if state.edge_owner[road] == me:
-            touching.update(ROAD_VERTICES[road])
-
-    owner = state.vertex_owner
-    return {
-        vertex for vertex in range(1, NUM_VERTICES + 1)
-        if owner[vertex] == me or (owner[vertex] == NO_OWNER and vertex in touching)
-    }
-
-
-def _encode_roads(state, out, me, slots):
     base = LAYOUT["roads"].start
-    # Cost aside, so the feature says "reachable" rather than "affordable right now" —
-    # affordability is already visible from my hand.
-    reachable = _reachable_vertices(state, me)
     for road in range(1, NUM_ROADS + 1):
         at = base + (road - 1) * ROAD_FEATURES
-        owner = state.edge_owner[road]
+        owner = edges[road]
         out[at + (0 if owner == NO_OWNER else 1 + slots[owner])] = 1.0
-        at += MAX_PLAYERS + 1
-        out[at] = 1.0 if (
-            owner == NO_OWNER
-            and not reachable.isdisjoint(ROAD_VERTICES[road])
-        ) else 0.0
+        # Cost aside, so the feature says "reachable" rather than "affordable right now" —
+        # affordability is already visible from my hand.
+        #
+        # Only the 1.0 is written. This block of the static template is all zeros and both
+        # entry points reset from it, so an explicit `else 0.0` would be 64 stores a call to
+        # write a zero over a zero. That coupling is invisible from here, which is why it is
+        # stated: if the roads block ever acquires a non-zero template value, this needs an
+        # else again.
+        if owner == NO_OWNER and not reachable.isdisjoint(ROAD_VERTICES[road]):
+            out[at + MAX_PLAYERS + 1] = 1.0
 
 
-def _encode_players(state, out, me, slots, my_rates):
-    """``my_rates`` is ``me``'s trade rates, hoisted by :func:`encode` and shared with the
-    affordability block. Opponents' rates are still computed here — they are public."""
+def _encode_players(state, out, me, slots, points, production, rates_by_player):
+    """One row per player, from the survey rather than from nine walks over the board.
+
+    ``points`` is public victory points; my hidden Victory Point cards are added back for my
+    own row alone, which is the whole reason the two totals are different numbers.
+    """
     base = LAYOUT["players"].start
     for player, slot in slots.items():
         at = base + slot * PLAYER_FEATURES
@@ -542,10 +686,12 @@ def _encode_players(state, out, me, slots, my_rates):
         at += 1
 
         target = state.ruleset.victory_points_to_win
-        out[at] = min(rules.public_victory_points(state, player) / target, 1.0)
+        public = points[player]
+        out[at] = min(public / target, 1.0)
         at += 1
         # only I know my hidden Victory Point cards, so only I see my true total
-        out[at] = min(rules.victory_points(state, player) / target, 1.0) if mine else 0.0
+        if mine:
+            out[at] = min((public + held[DevCard.VICTORY_POINT]) / target, 1.0)
         at += 1
 
         out[at] = 1.0 if state.largest_army_holder == player else 0.0
@@ -560,8 +706,7 @@ def _encode_players(state, out, me, slots, my_rates):
         out[at + 2] = state.roads_left[player] / MAX_ROADS
         at += 3
 
-        rates = my_rates if mine else rules.trade_rates(state, player)
-        for resource, rate in enumerate(rates):
+        for resource, rate in enumerate(rates_by_player[player]):
             out[at + resource] = rate / BANK_RATE
         at += NUM_RESOURCES
 
@@ -571,7 +716,7 @@ def _encode_players(state, out, me, slots, my_rates):
         # What this player's board *makes*, per resource, per roll. Public: buildings and
         # number tokens are both on the table, and it is what a person means by "they have
         # no brick". Encoded for opponents too, for the same reason.
-        for resource, rate in enumerate(rules.production_rates(state, player)):
+        for resource, rate in enumerate(production[player]):
             out[at + resource] = min(rate / PRODUCTION_RATE_SCALE, 1.0)
 
 

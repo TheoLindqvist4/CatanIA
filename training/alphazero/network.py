@@ -46,15 +46,32 @@ from training.alphazero import layouts
 from training.net import build
 from training.structured_net import StructuredPolicyValueNet
 
-def new_network(width=64, road_width=32, context=128, hops=1, depth=2, rounds=0,
-                trunk=256):
-    """A fresh AlphaZero network at the current observation and action space."""
+def new_network(width=128, road_width=64, context=192, hops=1, depth=3, rounds=0,
+                trunk=192, aux=True):
+    """A fresh AlphaZero network at the current observation and action space.
+
+    The defaults changed in record 0026, from ``64/32/128, depth 2, trunk 256`` (200,379
+    parameters) to ``128/64/192, depth 3, trunk 192`` (374,331). Three measurements, not a
+    preference:
+
+    * A capacity sweep over nine shapes on 176,342 decisions — matched to the replay buffer
+      size on purpose — put ``depth`` 2 -> 3 as the single largest effect, halving value
+      error (MAE 0.1121 -> 0.0554) for +37k parameters, while policy agreement barely moved.
+    * 57.4% of the old parameters sat in one layer, the pooled trunk, against 9.4% in the
+      per-entity encoders that do the board reasoning. Cutting ``trunk`` and widening the
+      entities buys the depth almost for free.
+    * The whole change costs 11% of self-play throughput, because the network is only ~20%
+      of a searched decision — the Python engine is the other 80%.
+
+    ``aux`` defaults on: the auxiliary heads are the fix for a value head measured
+    explaining 14% of held-out outcome variance. See :class:`StructuredPolicyValueNet`.
+    """
     return StructuredPolicyValueNet(
         obs_size=encoder.SIZE,
         num_actions=action_space.NUM_ACTIONS,
         width=width, road_width=road_width, context=context,
         hops=hops, depth=depth, rounds=rounds, trunk=trunk,
-        value_activation="tanh",
+        value_activation="tanh", aux=aux,
     )
 
 

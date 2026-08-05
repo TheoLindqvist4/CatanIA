@@ -734,3 +734,35 @@ def _spaced_vertices(state, count, avoid=()):
         if len(out) == count:
             return out
     raise AssertionError(f"could not find {count} spaced vertices")
+
+
+# --------------------------------------------------------------------------- #
+# legal_actions translates the predicates; it does not decide                  #
+# --------------------------------------------------------------------------- #
+
+def test_the_road_loop_agrees_with_can_build_road():
+    """``legal_actions`` hoists the pieces-and-payment half of ``can_build_road`` out of the
+    72-road loop, because the gate above it has just established both and neither can change
+    while the loop runs. That is an optimisation with a second authority hiding in it, so it
+    is pinned: ``can_build_road`` stays the definition, and the loop has to match it exactly,
+    including the order the actions come out in.
+    """
+    from catan.rulesets import ALL
+    from catan.state import GameState
+    from helpers import drive
+
+    def check(state):
+        if state.phase is not Phase.BUILD:
+            return
+        player = state.current_player
+        offered = [a for a in rules.legal_actions(state)
+                   if a.type is ActionType.BUILD_ROAD]
+        authoritative = [build_road(road) for road in range(1, T.NUM_ROADS + 1)
+                         if rules.can_build_road(state, player, road)]
+        assert offered == authoritative
+
+    for ruleset in ALL:
+        for num_players in (2, 3, 4):
+            state = GameState(num_players=num_players, seed=num_players, ruleset=ruleset)
+            drive(state, random.Random(num_players ^ 0x5A), max_actions=600,
+                  on_step=check)

@@ -1,0 +1,97 @@
+# AlphaZero self-play, second generation — the configuration for the record 0026 run.
+#
+# A separate file from configs/train.yaml on purpose: that one describes the run that
+# produced models/champion_az.pt, and the numbers in its comments are the measurements that
+# justified it. This is a different network shape and a different set of targets, so it gets
+# its own file rather than overwriting the history of the previous one.
+#
+# The diagnosis this run is answering, all measured on the reigning champion:
+#
+#   * The value head explains 14% of held-out outcome variance (MSE 0.83 against 0.97 for
+#     predicting nothing) while scoring 0.28 on the buffer it was fitted to. The board is
+#     constant within a game and is in the observation, and the buffer held ~900 distinct
+#     games, so the head learned to recognise the board and recall its result.
+#   * Because search leans on that value head, the 96-simulation label is now only +4.3
+#     points better than the network's own prior at picking what a clean 400-simulation
+#     search picks — down from the +20 that justified the setting in record 0023.
+#   * So training was a fixed point: policy_loss sat within 0.005 of H(pred) in all five
+#     previous runs, which is what happens when the network has become its own target.
+#
+# Everything below is aimed at the value head. Nothing here is aimed at capacity.
+
+# --- self-play ----------------------------------------------------------------------- #
+self_play_workers: 14
+envs_per_worker: 12
+mcts_simulations: 96               # unchanged: 160 and 192 measured no better than 96
+max_turns: 400
+
+# --- exploration --------------------------------------------------------------------- #
+temperature: 1.0
+temperature_final: 0.15
+temperature_opening_turns: 20
+c_puct: 1.5
+fpu: 0.25
+dirichlet_alpha: 0.5
+dirichlet_weight: 0.10
+
+# --- the Gumbel root: implemented, measured, OFF --------------------------------------- #
+# Paired over 250 positions, agreement with a clean 400-simulation search, against a raw
+# policy that already scores 72.8%:
+#
+#     PUCT 96, noise 0.10         73.2%    +0.4    p=1.00
+#     Gumbel, c_visit 0.5         59.2%   -13.6    p=0.0019
+#     Gumbel, c_visit 50 (paper)  49.2%   -23.6    p<0.0001
+#
+# Monotone in the scale, and the small-scale limit is the prior, so there is no setting that
+# wins. Gumbel's guarantee needs informative Q; here every simulation resamples a different
+# determinized world and scores it with the value head above, so leaning on Q harder than
+# visit counts do amplifies determinization variance. Revisit once the value head is better.
+gumbel: false
+
+# --- playout cap randomization --------------------------------------------------------- #
+# A quarter of moves get the full 96 simulations and are recorded; the rest get 24 and are
+# played but never trained on. KataGo measures 1.37x for this. The reason it is here is the
+# second-order effect: a game contributes about a quarter as many rows, so the buffer holds
+# roughly four times as many distinct games, which is the direct fix for the memorisation
+# above. Measured in a smoke test: 56 distinct games per 285 rows, against ~195 rows per
+# game before.
+playout_cap_probability: 0.25
+playout_cap_fast: 24
+
+# --- replay ------------------------------------------------------------------------- #
+replay_buffer_size: 180000
+min_buffer: 4000
+max_per_game: 8                    # rows one game may contribute to a 512-row batch
+
+# --- learning ------------------------------------------------------------------------ #
+batch_size: 512
+training_batches: 60
+generate_seconds: 35
+positions_per_iteration: 0
+learning_rate: 0.0001              # top of CLAUDE.md's 3e-5..1e-4 fine-tuning band: the
+                                   # trunk is distilled but the auxiliary heads are new
+weight_decay: 0.0001
+value_weight: 1.0
+grad_clip: 1.0
+
+# --- what the value head is trained on -------------------------------------------------- #
+root_value_weight: 0.5             # target = 0.5*outcome + 0.5*search root value
+owner_weight: 0.15                 # final ownership of every vertex and road, cross-entropy
+margin_weight: 0.15                # final victory-point margin, MSE
+
+# --- evaluation ------------------------------------------------------------------------ #
+# Off in the loop. It scores the raw policy, which CLAUDE.md records moving opposite to
+# search-ranked strength, and it idles all fourteen workers while the parent plays. The run
+# snapshots instead and training/alphazero/arena.py ranks the snapshots afterwards, with
+# search, against models/champion_az.pt.
+evaluate_every: 0
+evaluation_games: 200
+evaluation_opponent: champion_az
+promotion_games: 400
+promotion_threshold: 0.55
+
+# --- housekeeping --------------------------------------------------------------------- #
+checkpoint_interval_minutes: 15    # also the snapshot interval: ~12 candidates in 3 hours
+seed: 0
+warm_start: checkpoints/distilled_v2.pt
+run_directory: checkpoints/az_v2

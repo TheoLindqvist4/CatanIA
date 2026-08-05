@@ -30,6 +30,24 @@ def build_network(config, log=print):
     A cold start is supported and is what "learns entirely from self-play" means, but it is
     not the default here: see ``docs/decisions/0023-alphazero-self-play.md`` for why, and for
     what is given up by warm-starting.
+
+    ⚠️ **A warm start builds the checkpoint's shape, not the configured one.**
+    :func:`~training.alphazero.network.load_for_alphazero` reads ``checkpoint["config"]``,
+    which is the whole point when the *observation* has changed — ``graft`` widens the
+    affected layers and every weight keeps its meaning. But ``graft`` cannot help when
+    ``width``, ``depth`` or ``trunk`` change: then every tensor has a different shape and
+    there is no column-wise correspondence to preserve.
+
+    So changing :func:`~training.alphazero.network.new_network`'s defaults while
+    ``warm_start`` points at an older checkpoint does **nothing**, silently. That is not
+    hypothetical — it is the state this function was in when record 0026 changed the defaults
+    to 374,331 parameters: a run started then trained the reigning 200,379-parameter shape,
+    with ``aux=False``, so the auxiliary targets self-play was computing were dropped on the
+    floor by the loss. Nothing raised, and the metrics looked healthy.
+
+    It is now reported. The mismatch is not an error — carrying a trained policy forward is
+    usually worth more than the shape you asked for — but it has to be a decision somebody
+    took, so it is printed next to what to do about it.
     """
     source = config["warm_start"]
     if not source:
@@ -47,7 +65,44 @@ def build_network(config, log=print):
             f"(checkpoint was trained at obs_size={notes['trained_at_obs_size']})")
     if notes["reset"]:
         log(f"  re-initialised: {', '.join(notes['reset'])}")
+
+    difference = shape_difference(net)
+    if difference:
+        notes["shape_mismatch"] = difference
+        log("")
+        # ASCII on purpose: this prints to a Windows console, whose default cp1252 codec
+        # raises UnicodeEncodeError on the warning sign this file uses freely in docstrings.
+        # A startup banner that crashes the run it is warning about is worse than no banner.
+        log("  !! this run will train the CHECKPOINT's shape, not the configured one:")
+        for key, (was, wanted) in sorted(difference.items()):
+            log(f"        {key:<16} {was!r:>8}  configured {wanted!r}")
+        log(f"      {net.num_parameters():,} parameters, not "
+            f"{new_network().num_parameters():,}. graft carries an *observation* change; it "
+            f"cannot carry a width, depth or trunk change.")
+        log(f"      To actually train the configured shape, either:")
+        log(f"        python -m training.alphazero.distil --source {source} "
+            f"--out checkpoints/distilled.pt   (then warm_start from that)")
+        log(f"        python -u -m training.alphazero.train --cold"
+            f"                       (throws the policy away)")
+        log("")
     return net, notes
+
+
+def shape_difference(net):
+    """``{key: (checkpoint's value, configured value)}`` for every geometry key that differs.
+
+    Compared against a freshly built network rather than against a written-down table, so
+    this cannot go stale when :func:`~training.alphazero.network.new_network`'s signature
+    changes — which is exactly the event it exists to notice.
+    """
+    wanted = new_network().config()
+    have = net.config()
+    return {
+        key: (have.get(key), wanted[key])
+        for key in ("width", "road_width", "context", "hops", "depth", "rounds", "trunk",
+                    "aux")
+        if key in wanted and have.get(key) != wanted[key]
+    }
 
 
 def main(argv=None):
@@ -73,6 +128,11 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--cold", action="store_true",
                         help="ignore warm_start and begin from a fresh network")
+    parser.add_argument("--warm-start", default=None, dest="warm_start",
+                        help="checkpoint to continue from, overriding the config. The usual "
+                             "value is models/champion_az.pt: a follow-on run should start "
+                             "from the champion, not from whatever the previous run's "
+                             "config happened to name")
     parser.add_argument("--run-directory", default=None, dest="run_directory")
     arguments = parser.parse_args(argv)
 
@@ -80,9 +140,11 @@ def main(argv=None):
         name: getattr(arguments, name)
         for name in ("self_play_workers", "mcts_simulations", "positions_per_iteration",
                      "generate_seconds", "training_batches", "learning_rate", "seed",
-                     "run_directory")
+                     "run_directory", "warm_start")
     }
     if arguments.cold:
+        if arguments.warm_start:
+            parser.error("--cold and --warm-start contradict each other")
         overrides["warm_start"] = ""
     config = load_config(arguments.config, **overrides)
 
@@ -109,8 +171,21 @@ def main(argv=None):
     print(f"\nran {trainer.iteration} iterations, {trainer.games:,} games, "
           f"{trainer.positions:,} positions in {elapsed:.1f} minutes")
     print(f"checkpoints in {trainer.directory}/ — nothing was written to models/")
-    print("promote with:  python -m training.alphazero.champion promote "
-          f"{trainer.directory}/best.pt")
+    # Which candidate to offer the gate depends on whether the in-loop check ran. With it
+    # off there is no `best.pt` and, more to the point, no opinion about which snapshot is
+    # best — which is the honest state, because that opinion was the raw policy's and
+    # CLAUDE.md records it moving opposite to search-ranked strength. Rank first, promote
+    # second.
+    snapshots = sorted((trainer.directory / "snapshots").glob("iter_*.pt"))
+    if snapshots:
+        print(f"\n{len(snapshots)} snapshots in {trainer.directory}/snapshots/. Rank them "
+              f"*with search* before promoting anything:")
+        print(f"  python -m training.alphazero.arena {trainer.directory}/snapshots/*.pt "
+              f"{trainer.directory}/latest.pt")
+        print("  python -m training.alphazero.champion promote <the winner>")
+    else:
+        print("promote with:  python -m training.alphazero.champion promote "
+              f"{trainer.directory}/best.pt")
     return 0
 
 

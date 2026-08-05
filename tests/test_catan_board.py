@@ -191,3 +191,47 @@ def test_a_board_is_unchanged_by_a_full_game():
     before = snapshot_board(state.board)
     drive(state, random.Random(11), max_actions=3000)
     assert snapshot_board(state.board) == before
+
+
+# --------------------------------------------------------------------------- #
+# The expected-production cache                                               #
+# --------------------------------------------------------------------------- #
+
+def test_expected_production_is_derived_from_the_layout():
+    """Re-derived from the tile arrays rather than compared to itself.
+
+    A cache that is checked against its own first answer proves only that it is a cache.
+    This rebuilds the quantity from ``tile_numbers`` and ``tile_resources``, which is what
+    it is supposed to mean.
+    """
+    from catan.board import roll_odds
+    from catan.resources import NUM_RESOURCES
+
+    for seed in range(10):
+        board = make_board(seed)
+        for vertex in range(1, T.NUM_VERTICES + 1):
+            want = [0.0] * NUM_RESOURCES
+            for tile in T.VERTEX_TILES[vertex]:
+                resource = board.tile_resources[tile]
+                if resource is not DESERT:
+                    want[int(resource)] += roll_odds(board.tile_numbers[tile])
+            assert list(board.expected_production(vertex)) == pytest.approx(want)
+
+
+def test_expected_production_still_rejects_a_bad_vertex_id():
+    """The cache is a per-vertex table, so an unvalidated id silently reads the wrong row —
+    ``table[0 - 1]`` is vertex 54. That is the VERTEX_TILES/TILE_VERTICES failure mode
+    CLAUDE.md records, which is why check_id stays on this side of the cache."""
+    board = make_board()
+    for bad in (0, -1, T.NUM_VERTICES + 1):
+        with pytest.raises(ValueError):
+            board.expected_production(bad)
+
+
+def test_expected_production_hands_out_the_same_immutable_row():
+    """One object per vertex, and a tuple: a caller that mutated a list would corrupt the
+    board for every clone sharing it, which is every clone."""
+    board = make_board()
+    first = board.expected_production(7)
+    assert isinstance(first, tuple)
+    assert board.expected_production(7) is first

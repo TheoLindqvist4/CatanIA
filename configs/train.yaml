@@ -60,10 +60,18 @@ grad_clip: 1.0
 # batch 1, so 200 games at 32 simulations costs ~13 minutes. At 0 simulations the agent plays
 # its raw policy — one forward per move, ~40 seconds — which answers the only question the
 # loop needs answered. Whether search helps is settled once, by the promotion gate.
-evaluation_games: 100              # guide: 1000 — the Wilson bound decides, not the count
+#
+# evaluate_every is 0 — the in-loop check is OFF. It measured 16.8-29.2 s an evaluation and
+# 1.9-4.4% of a run's wall clock across five real runs, all of it with the worker pool idle,
+# and what it measures is the raw policy: a column CLAUDE.md records moving in the *opposite*
+# direction to search-ranked strength, twice. The run snapshots to <run>/snapshots/ instead,
+# and training/alphazero/arena.py ranks those with search once the run is over.
+#
+# Put it back to 25 if you want the smoke alarm during a long unattended run.
+evaluation_games: 200              # 100 gave +-10 points, which cannot see a real change
 promotion_games: 400
 promotion_threshold: 0.55          # guide: 0.55
-evaluate_every: 20
+evaluate_every: 0
 eval_simulations: 0                # 0 = the raw policy
 
 # --- housekeeping --------------------------------------------------------------------- #

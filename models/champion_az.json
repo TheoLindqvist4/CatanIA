@@ -1,15 +1,14 @@
 {
-  "promoted_at": "2026-08-04 21:43",
+  "promoted_at": "2026-08-05 21:23",
   "lineage": "alphazero",
-  "source": "checkpoints/az_snapshots/iter_168.pt",
+  "source": "checkpoints/az_v2/latest.pt",
   "observation": 2503,
   "actions": 325,
-  "beat_heuristic": 0.8125,
-  "beat_ppo_champion": 0.853904282115869,
-  "beat_champion": 0.5181347150259067,
+  "beat_heuristic": 0.9273182957393483,
+  "beat_ppo_champion": 0.93,
+  "beat_champion": 0.71,
   "games": 400,
   "simulations": 64,
-  "forced": true,
   "history": [
     {
       "promoted_at": "2026-08-04 15:11",
@@ -35,8 +34,21 @@
       "beat_champion": 0.5625,
       "games": 400,
       "simulations": 32
+    },
+    {
+      "promoted_at": "2026-08-04 21:43",
+      "lineage": "alphazero",
+      "source": "checkpoints/az_snapshots/iter_168.pt",
+      "observation": 2503,
+      "actions": 325,
+      "beat_heuristic": 0.8125,
+      "beat_ppo_champion": 0.853904282115869,
+      "beat_champion": 0.5181347150259067,
+      "games": 400,
+      "simulations": 64,
+      "forced": true,
+      "forced_reason": "80.6% against the fixed heuristic against the reigning champion's 74.4% (two-proportion z=2.10, p=0.036), 77.6% against the PPO champion against 76.1%, and 51.8% [46.8, 56.8] head to head \u2014 better on every rung, significantly better on the fixed yardstick, never worse. The head-to-head rung is a weak discriminator here because the candidate is the champion's direct descendant, warm-started from it.",
+      "note": "re-measured at 64 simulations after raising CHAMPION_SIMULATIONS from 32; the weights are unchanged, the numbers belong to the new budget"
     }
-  ],
-  "forced_reason": "80.6% against the fixed heuristic against the reigning champion's 74.4% (two-proportion z=2.10, p=0.036), 77.6% against the PPO champion against 76.1%, and 51.8% [46.8, 56.8] head to head \u2014 better on every rung, significantly better on the fixed yardstick, never worse. The head-to-head rung is a weak discriminator here because the candidate is the champion's direct descendant, warm-started from it.",
-  "note": "re-measured at 64 simulations after raising CHAMPION_SIMULATIONS from 32; the weights are unchanged, the numbers belong to the new budget"
+  ]
 }

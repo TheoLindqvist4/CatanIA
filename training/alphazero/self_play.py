@@ -34,9 +34,11 @@ import time
 
 import numpy as np
 
-from catan import encoder
+from catan import encoder, rules
 from catan.env import CatanEnv
 from catan.rulesets import RANKED_1V1
+from catan.state import NO_OWNER
+from catan.topology import NUM_ROADS, NUM_VERTICES
 from training.alphazero import replay_buffer
 from training.alphazero.determinize import determinize
 from training.alphazero.mcts import Search
@@ -49,14 +51,44 @@ TRAINING_MAX_TURNS = 400
 class Sample:
     """One recorded decision, waiting for the game to tell it whether it was a win."""
 
-    __slots__ = ("obs", "mask", "index", "probability", "player")
+    __slots__ = ("obs", "mask", "index", "probability", "player", "root_value")
 
-    def __init__(self, obs, mask, index, probability, player):
+    def __init__(self, obs, mask, index, probability, player, root_value=0.0):
         self.obs = obs
         self.mask = mask
         self.index = index
         self.probability = probability
         self.player = player
+        #: The search's own opinion of this position, in this mover's frame. A second value
+        #: target beside the game result: the result is one bit shared by ~195 decisions,
+        #: which is why the value head was measured explaining 14% of held-out variance.
+        self.root_value = root_value
+
+
+def final_ownership(state, player):
+    """Who owns each vertex and each road at the end, in ``player``'s frame.
+
+    ``0`` nobody, ``1`` mine, ``2`` theirs — 54 vertices then 72 roads, as one int8 row.
+    An auxiliary target: dense, per-element, and impossible to answer by recognising which
+    board this is, which is exactly the failure the plain outcome target permits.
+    """
+    owners = np.zeros(NUM_VERTICES + NUM_ROADS, dtype=np.int8)
+    for vertex in range(1, NUM_VERTICES + 1):
+        owner = state.vertex_owner[vertex]
+        owners[vertex - 1] = 0 if owner == NO_OWNER else (1 if owner == player else 2)
+    for road in range(1, NUM_ROADS + 1):
+        owner = state.edge_owner[road]
+        owners[NUM_VERTICES + road - 1] = (
+            0 if owner == NO_OWNER else (1 if owner == player else 2))
+    return owners
+
+
+def final_margin(state, player, target):
+    """Final victory-point difference in ``player``'s frame, in units of the target score."""
+    others = [p for p in state.player_order if p != player]
+    mine = rules.victory_points(state, player)
+    theirs = max(rules.victory_points(state, p) for p in others) if others else 0
+    return float(np.clip((mine - theirs) / target, -1.0, 1.0))
 
 
 class Game:
@@ -89,6 +121,11 @@ class Game:
         self.decisions = 0
         self.searched = 0
         self._searches = 0
+        #: Which game a sample came from, so the trainer can cap how many rows one game
+        #: contributes to a batch. Seeds are distinct per game and per worker, so this is
+        #: unique across the pool without any shared counter.
+        self.game_id = int(self.seed)
+        self.recording = True
 
     def _temperature(self):
         opening = self.config.get("temperature_opening_turns", 20)
@@ -109,15 +146,32 @@ class Game:
         self._searches += 1
         stream = random.Random(self.seed * 1_000_003 + self._searches)
         world = determinize(self.env.state, player, rng=stream)
+
+        # Playout cap randomization (KataGo, 1.37x measured). Most moves get a cheap search
+        # that is played but never recorded; a minority get the full budget and are the only
+        # ones written to the buffer. Two effects, both wanted here: the average move costs
+        # far less, and — because a game contributes a quarter as many rows — the same buffer
+        # holds about four times as many distinct games. The second is the point. The value
+        # head was memorising board identity from ~900 games; this is the cheapest way to
+        # multiply that number without generating more data.
+        cap = self.config.get("playout_cap_probability", 0.0)
+        self.recording = cap <= 0 or self.rng.random() < cap
+        budget = (self.config.get("simulations", 48) if self.recording
+                  else self.config.get("playout_cap_fast", 24))
+
         self.search = Search(
             world,
-            budget=self.config.get("simulations", 48),
+            budget=budget,
             rng=self.rng,
             c_puct=self.config.get("c_puct", 1.5),
             fpu=self.config.get("fpu", 0.25),
-            noise=self.config.get("dirichlet_weight", 0.25),
+            # A fast search is never trained on, so root exploration would only add variance
+            # to a move that is actually played. Exploration belongs to the recorded ones.
+            noise=self.config.get("dirichlet_weight", 0.25) if self.recording else 0.0,
             alpha=self.config.get("dirichlet_alpha", 0.5),
             max_turns=self.env.max_turns,
+            gumbel=self.config.get("gumbel", False),
+            gumbel_actions=self.config.get("gumbel_actions", 16),
         )
 
     def request(self):
@@ -158,16 +212,22 @@ class Game:
 
     def _commit(self):
         """The search is finished: record the target and play the move."""
-        actions, counts = self.search.visit_counts()
         action = self.search.best_action(self._temperature())
-        index, probability = replay_buffer.sparse_policy(actions, counts)
-        self.samples.append(Sample(
-            obs=np.fromiter(self.info["obs"], dtype=np.float16, count=encoder.SIZE),
-            mask=replay_buffer.pack_mask(self.info["mask"]),
-            index=index, probability=probability,
-            player=self.info["player"],
-        ))
-        self.searched += 1
+        if self.recording:
+            # `policy_target` rather than `visit_counts`: under the Gumbel root the visits
+            # are spread deliberately evenly by Sequential Halving, so the counts carry much
+            # less than the completed-Q distribution does. For a plain PUCT search the two
+            # are the same thing.
+            actions, weights = self.search.policy_target()
+            index, probability = replay_buffer.sparse_policy(actions, weights)
+            self.samples.append(Sample(
+                obs=np.fromiter(self.info["obs"], dtype=np.float16, count=encoder.SIZE),
+                mask=replay_buffer.pack_mask(self.info["mask"]),
+                index=index, probability=probability,
+                player=self.info["player"],
+                root_value=self.search.root_value(),
+            ))
+            self.searched += 1
         self.search = None
         self._play(action, record=True)
 
@@ -181,13 +241,24 @@ class Game:
         self.decisions += 1
 
     def _finish(self):
-        """Stamp the outcome onto every sample and retire the game."""
+        """Stamp the outcome and the auxiliary targets onto every sample, and retire it."""
         winner = self.info["winner"]
+        state = self.env.state
+        target = self.env.ruleset.victory_points_to_win
+        # One ownership row and one margin per *seat*, not per sample: every sample from a
+        # seat shares them, and computing them 200 times per game would cost more than the
+        # search that produced the samples.
+        by_seat = {}
+        for sample in self.samples:
+            if sample.player not in by_seat:
+                by_seat[sample.player] = (final_ownership(state, sample.player),
+                                          final_margin(state, sample.player, target))
         for sample in self.samples:
             # A truncated game is a draw for both seats. Scoring it as a loss for whoever
             # was on move would teach the other seat that stalling is worth something.
             outcome = 0 if winner is None else (1 if sample.player == winner else -1)
-            self.finished.append((sample, outcome))
+            owners, margin = by_seat[sample.player]
+            self.finished.append((sample, outcome, owners, margin, self.game_id))
         self.results.append({
             "winner": winner,
             "turns": self.env.state.turn_number,
@@ -282,15 +353,30 @@ class Generator:
                 return collected, results
 
 
+#: How many arrays :func:`to_arrays` produces and :meth:`ReplayBuffer.add` consumes. Written
+#: down because the pool stitches them by index and a mismatch is silent: the arrays would
+#: still concatenate, just into the wrong columns.
+NUM_ARRAYS = 9
+
+
 def to_arrays(samples):
-    """``[(Sample, outcome)]`` -> the five arrays :class:`ReplayBuffer.add` takes."""
+    """``[(Sample, outcome, owners, margin, game_id)]`` -> the arrays the buffer takes.
+
+    Order is the argument order of :meth:`ReplayBuffer.add` and is load-bearing: the pool
+    stitches the workers' arrays by index, so a column swapped here would concatenate
+    cleanly and train on the wrong target.
+    """
     if not samples:
         empty = np.zeros((0,), dtype=np.float32)
-        return empty, empty, empty, empty, empty
+        return tuple(empty for _ in range(NUM_ARRAYS))
     return (
-        np.stack([s.obs for s, _ in samples]),
-        np.stack([s.index for s, _ in samples]),
-        np.stack([s.probability for s, _ in samples]),
-        np.stack([s.mask for s, _ in samples]),
-        np.asarray([outcome for _, outcome in samples], dtype=np.int8),
+        np.stack([s.obs for s, _, _, _, _ in samples]),
+        np.stack([s.index for s, _, _, _, _ in samples]),
+        np.stack([s.probability for s, _, _, _, _ in samples]),
+        np.stack([s.mask for s, _, _, _, _ in samples]),
+        np.asarray([outcome for _, outcome, _, _, _ in samples], dtype=np.int8),
+        np.asarray([s.root_value for s, _, _, _, _ in samples], dtype=np.float16),
+        np.stack([owners for _, _, owners, _, _ in samples]),
+        np.asarray([margin for _, _, _, margin, _ in samples], dtype=np.float16),
+        np.asarray([game_id for _, _, _, _, game_id in samples], dtype=np.int64),
     )

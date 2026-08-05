@@ -71,6 +71,36 @@ def played(seed=7, moves=120, ruleset=RANKED_1V1):
     return state
 
 
+def decision_state():
+    """A state with a real choice at the root — more than one legal action.
+
+    ``played()`` with its default arguments lands on a ROLL with *zero* legal actions, so
+    every test that opened a search on it skipped rather than ran, silently and forever.
+    Searching seeds for a decision is two lines and makes the difference between a test and
+    a decoration.
+    """
+    for seed in range(1, 40):
+        state = played(seed=seed, moves=120)
+        if len(action_space.legal_indices(state)) > 1:
+            return state
+    pytest.skip("no searchable position found")
+
+
+def extra_columns(rows, game_id=0):
+    """The auxiliary columns :meth:`ReplayBuffer.add` takes beside the original five.
+
+    A helper rather than four literals at every call site: record 0026 added root value,
+    final ownership, final margin and a game id, and a test that spelled them out would have
+    to be edited again by the next person who adds one.
+    """
+    return (
+        np.zeros(rows, dtype=np.float16),                                    # root_value
+        np.zeros((rows, replay_buffer.OWNER_COLUMNS), dtype=np.int8),        # owners
+        np.zeros(rows, dtype=np.float16),                                    # margin
+        np.full(rows, game_id, dtype=np.int64),                              # game_id
+    )
+
+
 def stub_evaluator(seed=0):
     """A network-shaped function that needs no network. Deterministic given the mask."""
     rng = np.random.default_rng(seed)
@@ -305,12 +335,8 @@ def test_search_refuses_more_than_two_players():
 
 
 def test_search_stays_within_its_budget():
-    state = played()
-    if not action_space.legal_indices(state):
-        pytest.skip("no decision")
-    search = Search(state, budget=17, rng=np.random.default_rng(0), noise=0.0)
-    if not search.searchable:
-        pytest.skip("forced move")
+    search = Search(decision_state(), budget=17, rng=np.random.default_rng(0), noise=0.0)
+    assert search.searchable
     evaluate = stub_evaluator()
     calls = 0
     while (pending := search.request()) is not None:
@@ -320,6 +346,83 @@ def test_search_stays_within_its_budget():
         calls += 1
     assert search.simulations == 17
     assert calls <= 17
+
+
+# =========================================================================== #
+# The Gumbel root                                                            #
+# =========================================================================== #
+
+def gumbel_search(budget=64, seed=0, **kwargs):
+    """A searched position and its search. Shared by the tests below."""
+    state = decision_state()
+    search = Search(state, budget=budget, rng=np.random.default_rng(seed),
+                    noise=0.0, gumbel=True, max_turns=400, **kwargs)
+    assert search.searchable
+    evaluate = stub_evaluator(seed)
+    while (pending := search.request()) is not None:
+        obs, mask = pending
+        probabilities, values = evaluate(obs[None, :], mask[None, :])
+        search.deliver(probabilities[0], float(values[0]))
+    return search
+
+
+def test_gumbel_target_is_a_distribution_over_legal_actions_only():
+    search = gumbel_search()
+    actions, weights = search.policy_target()
+    assert len(actions) == len(search.root.actions)
+    assert weights.sum() == pytest.approx(1.0)
+    assert (weights >= 0).all()
+    legal = set(action_space.legal_indices(search.root.state))
+    assert set(actions.tolist()) <= legal
+
+
+def test_gumbel_stays_within_its_budget():
+    """Sequential Halving must not overrun, including when the budget does not divide."""
+    for budget in (7, 16, 31, 64):
+        search = gumbel_search(budget=budget)
+        assert search.simulations == budget
+
+
+def test_gumbel_picks_a_candidate_it_actually_searched():
+    search = gumbel_search()
+    chosen = search.best_action()
+    survivors = {int(search.root.actions[slot]) for slot in search._candidates}
+    assert chosen in survivors, "the played move must come from the surviving set"
+    assert search.root.child_n[list(search._candidates)].min() > 0
+
+
+def test_plain_search_target_is_still_the_visit_counts():
+    """``policy_target`` must not change what a non-Gumbel search learns from."""
+    search = Search(decision_state(), budget=32, rng=np.random.default_rng(1), noise=0.0)
+    assert search.searchable
+    evaluate = stub_evaluator(1)
+    while (pending := search.request()) is not None:
+        obs, mask = pending
+        probabilities, values = evaluate(obs[None, :], mask[None, :])
+        search.deliver(probabilities[0], float(values[0]))
+
+    actions, weights = search.policy_target()
+    counts_actions, counts = search.visit_counts()
+    assert actions.tolist() == counts_actions.tolist()
+    assert weights == pytest.approx(counts / counts.sum())
+
+
+def test_gumbel_does_not_add_dirichlet_noise():
+    """Gumbel replaces the root noise; applying both would be exploration twice."""
+    search = Search(decision_state(), budget=8, rng=np.random.default_rng(2), noise=0.9,
+                    gumbel=True, max_turns=400)
+    assert search.searchable
+    evaluate = stub_evaluator(2)
+    pending = search.request()
+    obs, mask = pending
+    probabilities, values = evaluate(obs[None, :], mask[None, :])
+    search.deliver(probabilities[0], float(values[0]))
+
+    expected = probabilities[0][search.root.actions]
+    expected = expected / expected.sum()
+    assert search.root.prior == pytest.approx(expected), (
+        "a noise weight of 0.9 would be unmissable here if it had been applied"
+    )
 
 
 # =========================================================================== #
@@ -333,7 +436,7 @@ def test_generation_is_deterministic():
                               seed=3, width=3)
         samples, results = generator.run(positions=40)
         return ([(s.index.tolist(), s.probability.tolist(), s.player, outcome)
-                 for s, outcome in samples],
+                 for s, outcome, *_ in samples],
                 [r["winner"] for r in results])
 
     assert once() == once()
@@ -344,12 +447,12 @@ def test_generation_records_both_seats():
                           seed=5, width=4)
     samples, results = generator.run(games=1)
     assert results, "no game finished"
-    seats = {sample.player for sample, _ in samples}
+    seats = {sample.player for sample, *_ in samples}
     assert seats == {1, 2}, "a learner that saw one seat trains on winners only"
 
     finished = [r for r in results if r["winner"] is not None]
     if finished:
-        outcomes = {outcome for _, outcome in samples}
+        outcomes = {outcome for _, outcome, *_ in samples}
         assert outcomes <= {-1, 0, 1}
         assert 1 in outcomes and -1 in outcomes
 
@@ -414,9 +517,9 @@ def test_sparse_policy_round_trips_through_the_buffer():
     mask[actions] = True
     buffer.add(np.zeros((1, encoder.SIZE), dtype=np.float16), index[None, :],
                probability[None, :], pack_mask(mask)[None, :],
-               np.array([1], dtype=np.int8))
+               np.array([1], dtype=np.int8), *extra_columns(1))
 
-    _, policy, stored_mask, value = buffer.sample(1, np.random.default_rng(0))
+    _, policy, stored_mask, value, *_ = buffer.sample(1, np.random.default_rng(0))
     assert policy[0].sum() == pytest.approx(1.0, abs=2e-3)
     assert policy[0, 0] == pytest.approx(0.5, abs=2e-3), "END_TURN must not be lost to padding"
     assert policy[0, 324] == pytest.approx(0.05, abs=2e-3)
@@ -433,7 +536,7 @@ def test_buffer_wraps_and_keeps_the_newest():
             np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.int16),
             np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.float16),
             np.zeros((1, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
-            np.array([1], dtype=np.int8),
+            np.array([1], dtype=np.int8), *extra_columns(1, game_id=step),
         )
     assert len(buffer) == 4
     assert buffer.full
@@ -450,9 +553,9 @@ def test_sampling_covers_every_age_band():
             np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.int16),
             np.zeros((1, replay_buffer.POLICY_TOP_K), dtype=np.float16),
             np.zeros((1, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
-            np.array([0], dtype=np.int8),
+            np.array([0], dtype=np.int8), *extra_columns(1, game_id=step),
         )
-    obs, _, _, _ = buffer.sample(256, np.random.default_rng(0))
+    obs, *_ = buffer.sample(256, np.random.default_rng(0))
     ages = obs[:, 0]
     for band in range(4):
         low, high = band * 100, (band + 1) * 100
@@ -469,7 +572,7 @@ def test_add_more_than_capacity_keeps_the_newest():
         np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.int16),
         np.zeros((rows, replay_buffer.POLICY_TOP_K), dtype=np.float16),
         np.zeros((rows, (action_space.NUM_ACTIONS + 7) // 8), dtype=np.uint8),
-        np.zeros(rows, dtype=np.int8),
+        np.zeros(rows, dtype=np.int8), *extra_columns(rows),
     )
     assert added == 3
     assert sorted(float(v) for v in buffer.obs[:, 0]) == [7, 8, 9]
@@ -761,12 +864,20 @@ def test_parallel_pool_generates():
     finally:
         pool.close()
 
-    obs, index, probability, mask, value = arrays
+    obs, index, probability, mask, value, root_value, owners, margin, game_id = arrays
     assert len(obs) >= 60
     assert obs.shape[1] == encoder.SIZE
     assert index.shape[1] == replay_buffer.POLICY_TOP_K
     assert set(np.unique(value).tolist()) <= {-1, 0, 1}
     assert obs.dtype == np.float16
+    # The auxiliary columns must survive the pickle round trip through the pool, which is
+    # where a stitching mistake would show up: the arrays would concatenate cleanly into the
+    # wrong columns and the run would train on a permuted target without ever raising.
+    assert owners.shape == (len(obs), replay_buffer.OWNER_COLUMNS)
+    assert set(np.unique(owners).tolist()) <= {0, 1, 2}
+    assert root_value.shape == margin.shape == game_id.shape == (len(obs),)
+    assert np.all(np.abs(root_value.astype(np.float32)) <= 1.0)
+    assert len(np.unique(game_id)) > 1, "every row claiming one game defeats max_per_game"
 
 
 @pytest.mark.slow
@@ -811,7 +922,7 @@ def test_trainer_learns_a_step(tmp_path):
         np.random.default_rng(0).random((rows, encoder.SIZE)).astype(np.float16),
         index, probability,
         np.stack([pack_mask(row) for row in mask]),
-        np.ones(rows, dtype=np.int8),
+        np.ones(rows, dtype=np.int8), *extra_columns(rows),
     )
 
     before = net.policy_head.weight.detach().clone()
@@ -1192,3 +1303,108 @@ def test_a_forced_promotion_records_the_reason_and_the_head_to_head(tmp_path, mo
         "cannot be argued with later"
     )
     assert "mcts" in played
+
+
+# =========================================================================== #
+# THE CHANCE-NODE FAST PATH                                                   #
+# =========================================================================== #
+
+def test_a_balanced_dice_chance_node_has_only_one_outcome():
+    """The premise ``Search._sample_roll``'s fast path rests on, measured rather than argued.
+
+    Under the ranked ruleset the 36-card deck is *consumed*, ``clone`` copies it verbatim and
+    ``draw_balanced`` pops the last card — so every clone of one chance node draws the same
+    card. The search may therefore key the child off ``dice_deck[-1]`` instead of cloning and
+    rolling on every visit.
+
+    If this ever fails, the fast path is wrong and must go, not be patched.
+    """
+    from catan.rulesets import BASE_GAME
+    from tests.helpers import drive
+
+    balanced_positions = 0
+    for seed in range(6):
+        state = GameState(num_players=2, seed=seed, ruleset=RANKED_1V1)
+
+        def check(state):
+            nonlocal balanced_positions
+            if state.phase is not Phase.ROLL or rules.legal_actions(state):
+                return
+            balanced_positions += 1
+            predicted = sum(state.dice_deck[-1])
+            drawn = {rules.roll_dice(state.clone(rng=state.rng)) for _ in range(16)}
+            assert drawn == {predicted}, (
+                f"a chance node produced {sorted(drawn)}; the fast path would have "
+                f"committed to {predicted}"
+            )
+
+        drive(state, random.Random(seed ^ 0xD1CE), max_actions=500, on_step=check)
+
+    assert balanced_positions > 100, "the walk did not reach enough chance nodes to say"
+
+
+def test_plain_dice_still_resample_on_every_visit():
+    """The other half of the guard. ``dice_deck is None`` under the base game, so the fast
+    path must fall through and keep the genuine per-visit sampling a chance node needs."""
+    from catan.rulesets import BASE_GAME
+    from tests.helpers import drive
+
+    spreads = []
+    for seed in range(4):
+        state = GameState(num_players=2, seed=seed, ruleset=BASE_GAME)
+
+        def check(state):
+            if state.phase is not Phase.ROLL or rules.legal_actions(state):
+                return
+            assert state.dice_deck is None
+            spreads.append(len({rules.roll_dice(state.clone(rng=state.rng))
+                                for _ in range(24)}))
+
+        drive(state, random.Random(seed ^ 0xBEEF), max_actions=400, on_step=check)
+
+    assert spreads, "no chance node was reached"
+    assert max(spreads) > 1, "plain dice stopped being random"
+
+
+def test_the_search_still_reaches_the_same_positions_through_a_chance_node():
+    """The fast path may only skip work, never change where the search ends up.
+
+    A chance node under the ranked ruleset must hold exactly one child, and it must be the
+    child a full clone-and-roll would have built.
+    """
+    seen = 0
+    for start in range(6):
+        env = CatanEnv(num_players=2, ruleset=RANKED_1V1, max_turns=400)
+        observation, info = env.reset(seed=11 + start)
+        agents = {1: HeuristicAgent(1), 2: HeuristicAgent(2)}
+        for _ in range(20 + 12 * start):
+            if info["done"]:
+                break
+            observation, _, _, _, info = env.step(
+                agents[info["player"]](observation, info))
+        if info["done"]:
+            continue
+
+        world = determinize(env.state, info["player"], rng=random.Random(5 + start))
+        search = Search(world, budget=192, rng=np.random.default_rng(start), noise=0.0)
+        if not search.searchable:
+            continue
+        uniform = np.full(action_space.NUM_ACTIONS, 1.0 / action_space.NUM_ACTIONS)
+        while search.request() is not None:
+            search.deliver(uniform, 0.0)
+
+        stack = [search.root]
+        while stack:
+            node = stack.pop()
+            stack.extend(node.children.values())
+            if node.kind is not CHANCE:
+                continue
+            seen += 1
+            assert len(node.children) == 1, (
+                f"a balanced-dice chance node grew {len(node.children)} children; the "
+                f"deck cannot produce two totals from one state"
+            )
+            (total,) = node.children
+            assert total == sum(node.state.dice_deck[-1])
+
+    assert seen > 0, "no search built a chance node, so this proved nothing"

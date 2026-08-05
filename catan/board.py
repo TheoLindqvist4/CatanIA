@@ -276,7 +276,7 @@ class Board:
         return self.vertex_production[check_id(vertex, NUM_VERTICES, "vertex")]
 
     def expected_production(self, vertex):
-        """Expected cards **per resource, per roll** at ``vertex``, as a list of length 5.
+        """Expected cards **per resource, per roll** at ``vertex``, as a tuple of length 5.
 
         The board already knows which tiles a corner touches and what number each carries;
         this is the two multiplied together and summed. It is the quantity a person means by
@@ -286,16 +286,34 @@ class Board:
 
         One definition, used by the encoder and by ``training.alphazero.study``. Two would
         drift, and the one in the study is the one a person reads.
-        """
-        from catan.resources import NUM_RESOURCES
 
-        per = [0.0] * NUM_RESOURCES
-        for production in self.vertex_production[
-            check_id(vertex, NUM_VERTICES, "vertex")
-        ]:
-            if production.resource is not DESERT:
-                per[int(production.resource)] += roll_odds(production.number)
-        return per
+        **Computed once per board.** It is a pure function of the layout, and the layout is
+        frozen at construction — but it was being recomputed on every call, and every encode
+        calls it once per owned vertex. A tuple rather than a list because the cache hands
+        out the same object every time and a caller that mutated it would corrupt the board
+        for the rest of the run; all three call sites only read.
+
+        ``check_id`` stays on this side of the cache deliberately. Indexing a per-vertex
+        table with an unvalidated id is the ``VERTEX_TILES``/``TILE_VERTICES`` failure mode
+        ``CLAUDE.md`` records: ``table[0 - 1]`` is vertex 54's row, which type-checks, runs,
+        and is silently wrong.
+        """
+        return self._expected_production()[check_id(vertex, NUM_VERTICES, "vertex")]
+
+    def _expected_production(self):
+        cached = self.__dict__.get("_expected_production_table")
+        if cached is None:
+            from catan.resources import NUM_RESOURCES
+
+            cached = [None] * (NUM_VERTICES + 1)
+            for vertex in range(1, NUM_VERTICES + 1):
+                per = [0.0] * NUM_RESOURCES
+                for production in self.vertex_production[vertex]:
+                    if production.resource is not DESERT:
+                        per[int(production.resource)] += roll_odds(production.number)
+                cached[vertex] = tuple(per)
+            self.__dict__["_expected_production_table"] = cached
+        return cached
 
     def resource_scarcity(self):
         """Expected cards per roll of each resource across the **whole board**.

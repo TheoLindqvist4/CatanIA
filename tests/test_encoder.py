@@ -775,6 +775,116 @@ def test_encoding_is_fast_enough_to_sit_in_the_loop():
 
 
 # =========================================================================== #
+# THE TWO ENTRY POINTS                                                        #
+# =========================================================================== #
+
+def _same_floats(state, me):
+    """``(encode, encode_into)`` for one position, both as tuples of float32."""
+    import struct
+
+    buffer = E.observation_buffer()
+    E.encode_into(state, me, buffer)
+    as_list = E.encode(state, me)
+    # Round the list through float32 too: the comparison is "do the two doors agree",
+    # not "does float32 have 53 bits of mantissa".
+    narrowed = struct.unpack(f"{E.SIZE}f", struct.pack(f"{E.SIZE}f", *as_list))
+    return narrowed, tuple(buffer)
+
+
+def test_encode_into_matches_the_list_encoding_bit_for_bit():
+    """The two doors must be one encoder wearing two coats.
+
+    This single assertion subsumes three others: the same values means the leak detectors
+    above cover ``encode_into`` too, the same order means the network's input layout is
+    unchanged, and the same numbers means a checkpoint trained through one door still means
+    something through the other.
+    """
+    for ruleset in ALL:
+        for num_players in (2, 3, 4):
+            state = mid_game(seed=3, ruleset=ruleset, num_players=num_players)
+            for me in state.players:
+                as_list, as_buffer = _same_floats(state, me)
+                assert as_list == as_buffer, (
+                    f"{ruleset.name}, {num_players}p, seat {me}: the buffer encoding "
+                    f"differs at "
+                    f"{[i for i, (a, b) in enumerate(zip(as_list, as_buffer)) if a != b][:5]}"
+                )
+
+
+def test_encode_still_returns_python_floats():
+    """What stops ``encode`` quietly becoming an array: every other caller indexes it as a
+    list, and ``block`` slices it."""
+    observation = E.encode(mid_game(), 1)
+    assert isinstance(observation, list)
+    assert all(isinstance(value, float) for value in observation)
+
+
+@pytest.mark.slow
+def test_the_two_entry_points_agree_over_whole_games():
+    def check(state):
+        for me in state.players:
+            as_list, as_buffer = _same_floats(state, me)
+            assert as_list == as_buffer
+
+    for seed in range(3):
+        play_random_game(seed=seed, num_players=3, max_actions=700, on_step=check)
+
+
+def test_a_buffer_is_fully_overwritten_between_positions():
+    """The template reset is what makes a reused buffer safe. Without it a stale 1.0 from
+    the previous position survives wherever the new one writes nothing."""
+    state = mid_game()
+    buffer = E.observation_buffer()
+
+    E.encode_into(state, 1, buffer)
+    first = tuple(buffer)
+
+    other = mid_game(seed=9)
+    E.encode_into(other, 1, buffer)
+    E.encode_into(state, 1, buffer)
+    assert tuple(buffer) == first, "encoding a second position left residue in the buffer"
+
+
+# =========================================================================== #
+# THE FUSED SURVEY                                                            #
+# =========================================================================== #
+
+def test_fused_player_scores_agree_with_the_rules():
+    """``encoder._survey`` is a second implementation of scoring, which this repository
+    otherwise forbids. This test is the entire justification for it: :mod:`catan.rules`
+    stays the authority and the fast route has to keep producing the authority's answer.
+
+    Checked at *every* position of whole games, not at a sampled few — the interesting
+    cases are the ones nobody thinks to construct: an award changing hands, a settlement
+    becoming a city, a harbour vertex bought late.
+    """
+    def check(state):
+        points, production, rates = E._survey(state)
+        for player in state.players:
+            assert points[player] == rules.public_victory_points(state, player)
+            assert rates[player] == rules.trade_rates(state, player)
+            assert production[player] == pytest.approx(
+                rules.production_rates(state, player))
+            hidden = state.dev_cards[player][DevCard.VICTORY_POINT]
+            assert points[player] + hidden == rules.victory_points(state, player)
+
+    for ruleset in ALL:
+        for num_players in (2, 3, 4):
+            play_random_game(seed=num_players, num_players=num_players,
+                             ruleset=ruleset, max_actions=600, on_step=check)
+
+
+def test_the_survey_survives_a_board_with_no_award_holders():
+    """``largest_army_holder`` and ``longest_road_holder`` are ``None``, not 0, until
+    somebody earns them — and ``None`` is not a key in the per-player tables."""
+    state = fresh(seed=1)
+    assert state.largest_army_holder is None and state.longest_road_holder is None
+    points, _, _ = E._survey(state)
+    assert set(points) == set(state.players)
+    assert all(value == 0 for value in points.values())
+
+
+# =========================================================================== #
 # THE PUBLIC RECORD                                                           #
 # =========================================================================== #
 

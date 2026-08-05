@@ -171,16 +171,32 @@ class StructuredPolicyValueNet(nn.Module):
             ``[-1, 1]`` by construction. Kept as an option rather than a second class so
             there is one network, and defaulted to ``"linear"`` so a checkpoint written
             before this field existed rebuilds byte-identically.
+        aux: add the auxiliary prediction heads — final ownership per vertex and per road,
+            and the final victory-point margin. Off by default so a checkpoint written
+            before this field existed rebuilds byte-identically.
+
+            These exist to fix a *measured* failure, not for completeness. The value head
+            trained on outcomes alone scores MSE 0.83 on held-out positions against 0.97
+            for predicting nothing — it explains 14% of the variance — while scoring 0.28
+            on the replay buffer it was fitted to. The mechanism is that the board layout
+            is constant within a game and is in the observation, the buffer holds only
+            about 900 distinct games, and every position in a game shares one label, so the
+            head can identify the board and memorise its result. Ownership and margin are
+            dense, per-element, and *cannot* be answered by recognising the board, so they
+            force the shared trunk to encode play. This is the largest single item in
+            KataGo's own ablation table (1.65x training time to remove), and it costs
+            about 1% of the parameters here. See ``docs/decisions/0026``.
     """
 
     def __init__(self, obs_size=encoder.SIZE, num_actions=action_space.NUM_ACTIONS,
                  width=64, road_width=32, context=128, hops=1, depth=2, rounds=0,
-                 trunk=256, value_activation="linear"):
+                 trunk=256, value_activation="linear", aux=False):
         super().__init__()
         if value_activation not in ("linear", "tanh"):
             raise ValueError(f"value_activation must be 'linear' or 'tanh', "
                              f"got {value_activation!r}")
         self.value_activation = value_activation
+        self.aux = bool(aux)
         if obs_size != encoder.SIZE:
             raise ValueError(f"this network is tied to the encoder layout: expected "
                              f"{encoder.SIZE} floats, got {obs_size}")
@@ -278,9 +294,26 @@ class StructuredPolicyValueNet(nn.Module):
         self.policy_head = _layer(trunk, NUM_GLOBAL_ACTIONS, gain=0.01)
         self.value_head = _layer(trunk, 1, gain=1.0)
 
+        # --- auxiliary heads, off unless asked for --------------------------------------
+        # Registered as None rather than omitted so `state_dict` has a stable set of keys
+        # for a given config, and a checkpoint cannot half-load.
+        if self.aux:
+            # three classes, in the *mover's* frame: nobody, mine, theirs
+            self.vertex_owner = _layer(width, 3, gain=0.01)
+            self.road_owner = _layer(road_width, 3, gain=0.01)
+            # final victory-point margin, in units of the target score
+            self.margin_head = _layer(trunk, 1, gain=0.01)
+
     # ------------------------------------------------------------------ #
 
-    def forward(self, obs):
+    def _embed(self, obs):
+        """The three per-entity embeddings and the context vector.
+
+        Split out of :meth:`forward` so the auxiliary heads can read the same features
+        instead of recomputing them — they are 99% of the network's cost, and an auxiliary
+        head that re-ran the trunk would make the extra targets cost more than they are
+        worth. The body is exactly what ``forward`` used to do, moved rather than rewritten.
+        """
         batch = obs.shape[0]
         tiles = obs[:, TILE_SPAN].reshape(batch, _T_ROWS, _T_FEAT)
         vertices = obs[:, VERTEX_SPAN].reshape(batch, _V_ROWS, _V_FEAT)
@@ -313,7 +346,10 @@ class StructuredPolicyValueNet(nn.Module):
                     [v, self.n_vt @ t, self.n_vv @ v, self.n_vr @ r], -1))),
                 torch.relu(self.road_round[i](torch.cat([r, self.n_rv @ v], -1))),
             )
+        return t, v, r, g
 
+    def _decide(self, t, v, r, g, batch):
+        """``(logits, value, hidden)`` from the embeddings. The other half of ``forward``."""
         vertex_logits = self.vertex_logit(v)
         hidden = self.head(torch.cat([
             g,
@@ -336,7 +372,33 @@ class StructuredPolicyValueNet(nn.Module):
         value = self.value_head(hidden).squeeze(-1)
         if self.value_activation == "tanh":
             value = torch.tanh(value)
+        return logits, value, hidden
+
+    def forward(self, obs):
+        t, v, r, g = self._embed(obs)
+        logits, value, _ = self._decide(t, v, r, g, obs.shape[0])
         return logits, value
+
+    def forward_aux(self, obs):
+        """``(logits, value, vertex_owner, road_owner, margin)``.
+
+        ``vertex_owner`` is ``(batch, 54, 3)`` and ``road_owner`` is ``(batch, 72, 3)``,
+        both as raw logits over (nobody, mine, theirs) in the *mover's* frame — the same
+        frame the observation and the value target use, so no seat bookkeeping is needed.
+        ``margin`` is the final victory-point difference in units of the target score.
+
+        Raises:
+            RuntimeError: if this network was not built with ``aux=True``. Loud rather than
+                returning zeros, because a silently absent auxiliary loss is a change that
+                trains fine and measures as "the idea did not work".
+        """
+        if not self.aux:
+            raise RuntimeError("this network was built without auxiliary heads: rebuild it "
+                               "with aux=True, or do not ask for them")
+        t, v, r, g = self._embed(obs)
+        logits, value, hidden = self._decide(t, v, r, g, obs.shape[0])
+        return (logits, value, self.vertex_owner(v), self.road_owner(r),
+                self.margin_head(hidden).squeeze(-1))
 
     # ------------------------------------------------------------------ #
     # The masking contract, identical to PolicyValueNet's.               #
@@ -381,6 +443,7 @@ class StructuredPolicyValueNet(nn.Module):
             "rounds": self.rounds,
             "trunk": self.trunk_width,
             "value_activation": self.value_activation,
+            "aux": self.aux,
             # Not a constructor argument: the *shape of the observation* this checkpoint was
             # trained against, recorded so a later encoder change can reconcile it without
             # guessing which block grew. `obs_size` alone cannot say that — 1,884 floats

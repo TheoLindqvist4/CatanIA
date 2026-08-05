@@ -30,6 +30,7 @@ it needs no bookkeeping per sample.
 import numpy as np
 
 from catan import action_space, encoder
+from catan.topology import NUM_ROADS, NUM_VERTICES
 
 #: How many actions of a policy target are kept. Above the number of simulations any run
 #: here can afford, so nothing with a visit is ever dropped.
@@ -42,6 +43,16 @@ DEFAULT_CAPACITY = 220_000
 AGE_BANDS = 4
 
 _MASK_BYTES = (action_space.NUM_ACTIONS + 7) // 8
+
+#: Auxiliary ownership columns: one per vertex, then one per road.
+OWNER_COLUMNS = NUM_VERTICES + NUM_ROADS
+
+#: Rows one game may contribute to a batch. The value head was measured explaining 14% of
+#: held-out outcome variance while scoring three times better on the buffer it was fitted to;
+#: the board is constant within a game and is in the observation, so with ~900 games in the
+#: buffer the head can recognise the board and recall the result. Capping a game's share of a
+#: batch is the direct fix, and it is cheap: one bincount per draw.
+DEFAULT_MAX_PER_GAME = 8
 
 
 def pack_mask(mask):
@@ -83,6 +94,25 @@ def sparse_policy(actions, counts):
     return indices, probabilities
 
 
+def _rank_within_game(ids):
+    """For each entry, how many earlier entries share its game. Vectorised.
+
+    A stable sort groups equal ids while keeping their original order, so subtracting each
+    group's start offset from the running index gives the rank inside the group. Doing this
+    with a Python dict over a 512-row batch cost more than the draw it was filtering.
+    """
+    order = np.argsort(ids, kind="stable")
+    grouped = ids[order]
+    if len(grouped) == 0:
+        return np.zeros(0, dtype=np.int64)
+    starts = np.flatnonzero(np.r_[True, grouped[1:] != grouped[:-1]])
+    lengths = np.diff(np.r_[starts, len(grouped)])
+    ranks = np.arange(len(grouped)) - np.repeat(starts, lengths)
+    out = np.empty(len(ids), dtype=np.int64)
+    out[order] = ranks
+    return out
+
+
 class ReplayBuffer:
     """A fixed-capacity ring of ``(observation, policy target, value target)``.
 
@@ -97,6 +127,15 @@ class ReplayBuffer:
         self.policy_prob = np.zeros((self.capacity, POLICY_TOP_K), dtype=np.float16)
         self.mask = np.zeros((self.capacity, _MASK_BYTES), dtype=np.uint8)
         self.value = np.zeros(self.capacity, dtype=np.int8)
+        #: The search's own opinion of the position, as a second and much lower-variance
+        #: value target beside the game result.
+        self.root_value = np.zeros(self.capacity, dtype=np.float16)
+        #: Final ownership of every vertex then every road, in the mover's frame.
+        self.owners = np.zeros((self.capacity, OWNER_COLUMNS), dtype=np.int8)
+        #: Final victory-point margin, in units of the target score.
+        self.margin = np.zeros(self.capacity, dtype=np.float16)
+        #: Which game this row came from, so a batch can be capped per game.
+        self.game_id = np.zeros(self.capacity, dtype=np.int64)
         self.cursor = 0
         self.size = 0
         #: Positions ever written. Age is derived from this rather than stored per row.
@@ -109,7 +148,8 @@ class ReplayBuffer:
     def full(self):
         return self.size >= self.capacity
 
-    def add(self, obs, policy_index, policy_prob, mask, value):
+    def add(self, obs, policy_index, policy_prob, mask, value,
+            root_value, owners, margin, game_id):
         """Append one batch of positions, wrapping when full.
 
         Every argument is an array whose first axis is the batch. Written in at most two
@@ -119,17 +159,21 @@ class ReplayBuffer:
         count = len(obs)
         if count == 0:
             return 0
+        columns = [obs, policy_index, policy_prob, mask, value,
+                   root_value, owners, margin, game_id]
         if count >= self.capacity:
             # More than fits. Keep the newest, which is what a ring would have left anyway.
-            obs, policy_index, policy_prob, mask, value = (
-                a[-self.capacity:] for a in (obs, policy_index, policy_prob, mask, value)
-            )
+            columns = [a[-self.capacity:] for a in columns]
             count = self.capacity
+        (obs, policy_index, policy_prob, mask, value,
+         root_value, owners, margin, game_id) = columns
 
         first = min(count, self.capacity - self.cursor)
         for target, source in (
             (self.obs, obs), (self.policy_index, policy_index),
             (self.policy_prob, policy_prob), (self.mask, mask), (self.value, value),
+            (self.root_value, root_value), (self.owners, owners),
+            (self.margin, margin), (self.game_id, game_id),
         ):
             target[self.cursor:self.cursor + first] = source[:first]
             if count > first:
@@ -153,14 +197,8 @@ class ReplayBuffer:
         return np.concatenate([np.arange(self.cursor, self.capacity),
                                np.arange(0, self.cursor)])
 
-    def sample(self, batch_size, rng, bands=AGE_BANDS):
-        """Draw a batch in equal parts from ``bands`` equal age bands, newest band last.
-
-        Returns ``(obs, policy, mask, value)`` as float32/float32/bool/float32 numpy arrays,
-        with the policy densified to the full action space.
-        """
-        if self.size == 0:
-            raise ValueError("the buffer is empty")
+    def _draw_rows(self, batch_size, rng, bands):
+        """Row indices for one batch, in equal parts from ``bands`` equal age bands."""
         order = self._ordered()
         bands = max(1, min(bands, self.size))
         edges = np.linspace(0, self.size, bands + 1).astype(int)
@@ -173,7 +211,37 @@ class ReplayBuffer:
             if hi <= lo or wanted <= 0:
                 continue
             picks.append(order[rng.integers(lo, hi, size=wanted)])
-        rows = np.concatenate(picks)
+        return np.concatenate(picks)
+
+    def _cap_per_game(self, rows, rng, bands, max_per_game, attempts=4):
+        """Redraw rows until no game contributes more than ``max_per_game`` of the batch.
+
+        Bounded rather than exact. A buffer holding fewer distinct games than
+        ``batch_size / max_per_game`` cannot satisfy the cap at all, and looping until it
+        did would hang the run at exactly the moment the buffer is smallest — the first few
+        iterations. So this makes a fixed number of attempts and returns the best it has;
+        the cap is a regulariser, not an invariant.
+        """
+        for _ in range(attempts):
+            keep = _rank_within_game(self.game_id[rows]) < max_per_game
+            if keep.all():
+                break
+            rows = np.concatenate([rows[keep],
+                                   self._draw_rows(int((~keep).sum()), rng, bands)])
+        return rows
+
+    def sample(self, batch_size, rng, bands=AGE_BANDS, max_per_game=None):
+        """Draw a batch in equal parts from ``bands`` equal age bands, newest band last.
+
+        Returns ``(obs, policy, mask, value, root_value, owners, margin)`` — the policy
+        densified to the full action space, everything else as float32 except ``owners``,
+        which stays integral because it is a classification target.
+        """
+        if self.size == 0:
+            raise ValueError("the buffer is empty")
+        rows = self._draw_rows(batch_size, rng, bands)
+        if max_per_game:
+            rows = self._cap_per_game(rows, rng, bands, int(max_per_game))
 
         obs = self.obs[rows].astype(np.float32)
         mask = unpack_masks(self.mask[rows])
@@ -184,7 +252,10 @@ class ReplayBuffer:
         policy = np.zeros((len(rows), action_space.NUM_ACTIONS + 1), dtype=np.float32)
         np.put_along_axis(policy, self.policy_index[rows].astype(np.int64),
                           self.policy_prob[rows].astype(np.float32), axis=1)
-        return obs, policy[:, :action_space.NUM_ACTIONS], mask, value
+        return (obs, policy[:, :action_space.NUM_ACTIONS], mask, value,
+                self.root_value[rows].astype(np.float32),
+                self.owners[rows].astype(np.int64),
+                self.margin[rows].astype(np.float32))
 
     # ------------------------------------------------------------------ #
 

@@ -63,6 +63,18 @@ FPU_REDUCTION = 0.25
 DIRICHLET_ALPHA = 0.5
 DIRICHLET_WEIGHT = 0.25
 
+#: Root actions sampled without replacement by the Gumbel root. 16 against a measured mean of
+#: 9.6 legal moves means the sample is usually the whole set, and the halving schedule rather
+#: than the sampling is what does the work.
+GUMBEL_ACTIONS = 16
+
+#: The monotone transform applied to Q before it is added to the logits, from Danihelka et al.
+#: ``sigma(q) = (c_visit + max_visits) * c_scale * q``. Scaling by the largest visit count is
+#: what makes the transform grow with the search: early on the prior dominates, and by the end
+#: the Q values do.
+C_VISIT = 50.0
+C_SCALE = 1.0
+
 
 class Node:
     """One position in the tree.
@@ -176,10 +188,28 @@ class Search:
         c_puct, fpu, noise: see the module constants. ``noise=0`` disables root exploration,
             which is what evaluation and play want.
         max_turns: a game this long is scored as a draw rather than searched further.
+        gumbel: use the Gumbel root of Danihelka et al. instead of PUCT-plus-Dirichlet at
+            the root. Off by default so every existing caller is unchanged.
+
+            **Why it exists here.** Measured on this repository: at 96 simulations the
+            visit-count target agrees with a clean 400-simulation search 80.5% of the time
+            and the network's own prior already agrees 76.2% — +4.3 points, down from the
+            +20 that justified the setting in record 0023, and not significant once the
+            five settings compared are accounted for. Positions offer 9.6 legal moves on
+            average, so 96 PUCT simulations spend most of their budget confirming the
+            prior, and the visit counts come back as a copy of it. Sequential Halving
+            spends the same budget *discriminating* between a sampled set instead, and the
+            completed-Q target uses the value estimate for every action rather than only
+            the visited ones, so the target can differ from the prior even where the visits
+            do not. The construction is a policy improvement at any budget, which plain
+            visit counts are not.
+        gumbel_actions, c_visit, c_scale: see the module constants.
     """
 
     def __init__(self, state, budget=48, rng=None, c_puct=C_PUCT, fpu=FPU_REDUCTION,
-                 noise=DIRICHLET_WEIGHT, alpha=DIRICHLET_ALPHA, max_turns=400):
+                 noise=DIRICHLET_WEIGHT, alpha=DIRICHLET_ALPHA, max_turns=400,
+                 gumbel=False, gumbel_actions=GUMBEL_ACTIONS, c_visit=C_VISIT,
+                 c_scale=C_SCALE):
         if state.num_players != 2:
             raise ValueError("this search propagates a zero-sum scalar in seat 1's frame, "
                              "which is only meaningful for two players")
@@ -190,11 +220,26 @@ class Search:
         self.alpha = alpha
         self.max_turns = max_turns
         self.budget = budget
+        self.gumbel = bool(gumbel)
+        self.gumbel_actions = int(gumbel_actions)
+        self.c_visit = float(c_visit)
+        self.c_scale = float(c_scale)
 
         self.root = _node_for(state, max_turns, settle=False)
         self.simulations = 0
         self._path = None            # [(node, key)] awaiting a value
         self._pending = None         # the node awaiting a policy
+        #: Scratch for leaf encoding. Per-search, not shared: several searches are in flight
+        #: at once inside one :class:`~training.alphazero.self_play.Generator`.
+        self._buffer = encoder.observation_buffer()
+
+        # --- Gumbel root state, all set when the root is expanded --------------------- #
+        self._gumbel = None           # one Gumbel(0,1) draw per root action
+        self._logits = None           # log of the root prior, before any noise
+        self._candidates = None       # slots still in contention, as a numpy array
+        self._phase_counts = None     # visits given in the current phase, per slot
+        self._phase_quota = 0
+        self._phases = 1
 
     # ------------------------------------------------------------------ #
     # The player-facing result                                            #
@@ -242,6 +287,13 @@ class Search:
         actions = np.asarray(self.root.actions, dtype=np.int64)
         if not self.root.expanded:
             return int(actions[0])                  # never searched: only sane for a forced move
+        if self.gumbel:
+            # The Gumbel variables *are* the exploration, so this is stochastic across
+            # searches while being deterministic within one. ``temperature`` is therefore
+            # ignored rather than silently combined with it, which would be exploration
+            # applied twice and would undo the improvement guarantee.
+            return int(actions[int(self._candidates[
+                np.argmax(self._root_scores()[self._candidates])])])
         counts = np.asarray(self.root.child_n, dtype=np.float64)
         if counts.sum() == 0:
             return int(actions[int(np.argmax(self.root.prior))])
@@ -277,8 +329,17 @@ class Search:
             # deriving the same fact twice.
             mask = np.zeros(action_space.NUM_ACTIONS, dtype=bool)
             mask[node.actions] = True
-            observation = np.fromiter(encoder.encode(node.state, node.player),
-                                      dtype=np.float32, count=encoder.SIZE)
+            # Encoded straight into float32 rather than into a list of Python floats that is
+            # then unboxed element by element. `np.fromiter` over 2,503 floats measured 42 us
+            # against 95 us for the encode itself, once per simulation; `np.frombuffer` over
+            # the same numbers already stored as float32 is 0.5 us.
+            #
+            # The `.copy()` is not optional. `Generator.run` holds one pending observation
+            # per game in flight and stacks them at the end of the round, so a view onto a
+            # buffer this search will overwrite is a row that silently becomes some later
+            # position. It costs 0.5 us and removes the hazard rather than documenting it.
+            encoder.encode_into(node.state, node.player, self._buffer)
+            observation = np.frombuffer(self._buffer, dtype=np.float32).copy()
             return observation, mask
         return None
 
@@ -300,7 +361,13 @@ class Search:
         # and the search would degenerate to visiting slot 0. Uniform is the honest fallback.
         prior = prior / total if total > 1e-12 else np.full(len(node.actions),
                                                             1.0 / len(node.actions))
-        if node is self.root and self.noise > 0:
+        if node is self.root and self.gumbel:
+            # Gumbel *replaces* Dirichlet: the noise enters through the argmax rather than
+            # through the prior, which is what makes the result a policy improvement rather
+            # than a perturbed prior. Adding both would be exploration twice, and record
+            # 0023 already measured Dirichlet at 0.25 flipping 24% of the top moves.
+            self._setup_gumbel(prior)
+        elif node is self.root and self.noise > 0:
             draw = self.rng.dirichlet([self.alpha] * len(prior))
             prior = (1 - self.noise) * prior + self.noise * draw
 
@@ -315,6 +382,110 @@ class Search:
 
         self._backup(path, self._orient(float(value), node.player))
         self.simulations += 1
+
+    # ------------------------------------------------------------------ #
+    # The Gumbel root                                                     #
+    # ------------------------------------------------------------------ #
+
+    def _setup_gumbel(self, prior):
+        """Draw the Gumbel variables and open the first Sequential Halving phase.
+
+        ``logits`` is the log of the *normalised* prior. Any constant shift is common to
+        every action, and every use below is either a softmax or an argmax over actions, so
+        the missing normalisation constant cancels exactly.
+        """
+        n = len(prior)
+        self._logits = np.log(np.clip(prior, 1e-12, None))
+        self._gumbel = self.rng.gumbel(size=n)
+        m = min(self.gumbel_actions, n)
+        # Gumbel-Top-k: the top m of (logits + gumbel) is a sample of m actions drawn
+        # without replacement from the prior. This is the sampling step, done once.
+        self._candidates = np.sort(np.argsort(self._logits + self._gumbel)[::-1][:m])
+        self._phase_counts = np.zeros(n, dtype=np.int64)
+        self._phases = max(1, int(math.ceil(math.log2(m))) if m > 1 else 1)
+        self._open_phase()
+
+    def _open_phase(self):
+        """Visits each surviving candidate gets before the set is halved again."""
+        self._phase_counts[:] = 0
+        share = self.budget // (self._phases * max(1, len(self._candidates)))
+        self._phase_quota = max(1, int(share))
+
+    def _sigma(self, q):
+        """The monotone transform of Q that competes with the logits."""
+        largest = float(self.root.child_n.max()) if self.root.child_n is not None else 0.0
+        return (self.c_visit + largest) * self.c_scale * q
+
+    def _root_scores(self):
+        """``gumbel + logits + sigma(q)`` per root slot, for halving and for the final pick.
+
+        Unvisited slots score on ``gumbel + logits`` alone. Inside a phase every candidate
+        has at least one visit by construction, so this only matters for slots that were
+        never sampled, and those must never win.
+        """
+        node = self.root
+        visited = node.child_n > 0
+        return np.where(visited, self._gumbel + self._logits + self._sigma(node.child_q),
+                        self._gumbel + self._logits)
+
+    def _select_root_gumbel(self):
+        """The next root slot to visit, under Sequential Halving."""
+        while True:
+            counts = self._phase_counts[self._candidates]
+            slot = int(np.argmin(counts))
+            if counts[slot] < self._phase_quota:
+                chosen = int(self._candidates[slot])
+                self._phase_counts[chosen] += 1
+                return chosen
+            if len(self._candidates) <= 1:
+                # Budget left over and one candidate standing: keep spending on it. The
+                # extra visits sharpen its Q, which the policy target reads.
+                self._phase_quota += 1
+                continue
+            keep = max(1, len(self._candidates) // 2)
+            scores = self._root_scores()[self._candidates]
+            survivors = self._candidates[np.argsort(scores)[::-1][:keep]]
+            self._candidates = np.sort(survivors)
+            self._open_phase()
+
+    def policy_target(self):
+        """``(actions, probabilities)`` — the improved policy to train on.
+
+        Plain AlphaZero learns from normalised visit counts. Under the Gumbel root that
+        would throw away most of what the search found: with 96 simulations over a handful
+        of candidates, the visit counts are nearly uniform over the survivors by
+        construction, because Sequential Halving *deliberately* spends its budget evenly.
+
+        So the target is ``softmax(logits + sigma(completedQ))`` over **all** legal actions,
+        with ``completedQ(a) = q(a)`` where the action was visited and ``v_mix`` where it
+        was not. ``v_mix`` is the search's own estimate of the root, blended with the value
+        of the actions it did visit, weighted by their prior mass — so an unvisited action
+        is scored as "about what this position is worth" rather than as unknown.
+        """
+        node = self.root
+        if node.kind is not DECISION or not node.expanded:
+            return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
+        actions = np.asarray(node.actions, dtype=np.int64)
+        if not self.gumbel:
+            counts = np.asarray(node.child_n, dtype=np.float64)
+            total = counts.sum()
+            if total <= 0:
+                return actions, np.asarray(node.prior, dtype=np.float64)
+            return actions, counts / total
+
+        visited = node.child_n > 0
+        if not visited.any():
+            return actions, np.asarray(node.prior, dtype=np.float64)
+        total_n = float(node.child_n.sum())
+        weight = float(node.prior[visited].sum())
+        weighted_q = float(np.sum(node.prior[visited] * node.child_q[visited]))
+        v_mix = (node.value + (total_n / weight) * weighted_q) / (1.0 + total_n)
+
+        completed = np.where(visited, node.child_q, v_mix)
+        scores = self._logits + self._sigma(completed)
+        scores -= scores.max()
+        weights = np.exp(scores)
+        return actions, weights / weights.sum()
 
     # ------------------------------------------------------------------ #
     # Internals                                                           #
@@ -352,7 +523,8 @@ class Search:
                 continue
             if not node.expanded:
                 return node, path
-            slot = self._select(node)
+            slot = (self._select_root_gumbel()
+                    if self.gumbel and node is self.root else self._select(node))
             path.append((node, slot))
             child = node.children.get(slot)
             if child is None:
@@ -374,12 +546,39 @@ class Search:
         return 1.0 if node.winner == 1 else -1.0
 
     def _sample_roll(self, node):
-        """Draw a roll and step into the child for that total, creating it if new.
+        """Step into the child for the roll this node produces, creating it if new.
 
         Keyed by the total rather than the pair, because 5+2 and 3+4 lead to the same game.
-        Re-sampling on revisit is what makes a child's share of the visits match how often
-        that total actually comes up.
+
+        **Under plain dice, revisiting re-samples**, which is what makes a child's share of
+        the visits match how often that total actually comes up.
+
+        **Under the Balanced Dice deck it does not, and cannot.** The deck is consumed rather
+        than resampled: :func:`catan.dice.draw_balanced` pops the *last* card, and
+        :meth:`~catan.state.GameState.clone` copies the deck verbatim, so every clone of this
+        node draws the same card. Measured over 9,002 real chance nodes under ``RANKED_1V1``,
+        24 resamples of each produced **one** distinct total every time; the same measurement
+        under ``BASE_GAME`` gives 5-11. So the clone and the roll on a revisit were computing
+        a number already visible in ``dice_deck[-1]`` — 77% of chance-node visits, and 7.3%
+        of self-play wall clock, spent re-deriving it.
+
+        The fast path therefore only skips work whose answer is pinned. The miss path below
+        is unchanged, and ``dice_deck is None`` under plain dice makes the guard fall straight
+        through to it.
+
+        ⚠️ This changes which game a seed produces, and it is worth knowing why: a discarded
+        clone's deck could fall to ``RESHUFFLE_AT`` and call ``new_deck(state.rng)`` on the
+        *shared* generator, so those throw-away clones were advancing the real game's random
+        stream. Not rolling them leaves the stream where it was. The games are drawn from the
+        same distribution; they are not the same games.
         """
+        deck = node.state.dice_deck
+        if deck:
+            first, second = deck[-1]
+            child = node.children.get(first + second)
+            if child is not None:
+                return child
+
         world = node.state.clone(rng=node.state.rng)
         roll = rules.roll_dice(world)
         child = node.children.get(roll)
